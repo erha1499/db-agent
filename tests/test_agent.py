@@ -92,6 +92,27 @@ def stub_server(monkeypatch):
             thread.join(timeout=2)
 
 
+@pytest.fixture
+def captured_http_clients(monkeypatch):
+    sync_factory = agent_module.DefaultHttpxClient
+    async_factory = agent_module.DefaultAsyncHttpxClient
+    clients = []
+
+    def sync_client(*args, **kwargs):
+        client = sync_factory(*args, **kwargs)
+        clients.append(client)
+        return client
+
+    def async_client(*args, **kwargs):
+        client = async_factory(*args, **kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(agent_module, "DefaultHttpxClient", sync_client)
+    monkeypatch.setattr(agent_module, "DefaultAsyncHttpxClient", async_client)
+    return clients
+
+
 def test_chat_uses_project_endpoint_credentials_and_budgets(stub_server, capsys):
     assert main(["chat", "解释 SELECT 1 的含义"]) == 0
 
@@ -110,9 +131,42 @@ def test_chat_uses_project_endpoint_credentials_and_budgets(stub_server, capsys)
         "list_tables",
         "describe_table",
         "analyze_sql",
+        "execute_query",
     }
     assert body["messages"][-1] == {"role": "user", "content": "解释 SELECT 1 的含义"}
     assert TEST_KEY not in json.dumps(body)
+
+
+@pytest.mark.parametrize("shared_loop", [False, True])
+def test_repeated_agent_runs_can_reuse_endpoint_and_credentials(
+    stub_server, capsys, shared_loop, captured_http_clients,
+):
+    from db_agent.config import load_settings
+
+    if shared_loop:
+        settings = load_settings()
+
+        async def run_twice():
+            first = await agent_module.run_agent("第一次请求", settings)
+            second = await agent_module.run_agent("第二次请求", settings)
+            return first, second
+
+        assert asyncio.run(run_twice()) == ("这是本地 stub 的回答。", "这是本地 stub 的回答。")
+    else:
+        assert main(["chat", "第一次请求"]) == 0
+        assert main(["chat", "第二次请求"]) == 0
+        assert capsys.readouterr().out == "这是本地 stub 的回答。\n" * 2
+
+    assert len(stub_server["requests"]) == 2
+    assert {request["authorization"] for request in stub_server["requests"]} == {
+        f"Bearer {TEST_KEY}",
+    }
+    assert {request["path"] for request in stub_server["requests"]} == {
+        "/gateway/v1/chat/completions",
+    }
+    assert len(captured_http_clients) == 4
+    assert len({id(client) for client in captured_http_clients}) == 4
+    assert all(client.is_closed for client in captured_http_clients)
 
 
 def test_config_hides_values_and_does_not_call_model(stub_server, capsys):
@@ -153,7 +207,9 @@ def test_check_rejects_unexpected_answer_without_echoing_it(stub_server, capsys)
 
 
 @pytest.mark.parametrize("status", [401, 429, 500])
-def test_http_errors_hide_raw_details_and_are_not_retried(stub_server, capsys, status):
+def test_http_errors_hide_raw_details_and_are_not_retried(
+    stub_server, capsys, status, captured_http_clients,
+):
     stub_server["status"] = status
     stub_server["response"] = {
         "error": {
@@ -172,6 +228,8 @@ def test_http_errors_hide_raw_details_and_are_not_retried(stub_server, capsys, s
     assert TEST_KEY not in output.err
     assert "Traceback" not in output.err
     assert len(stub_server["requests"]) == 1
+    assert len(captured_http_clients) == 2
+    assert all(client.is_closed for client in captured_http_clients)
 
 
 @pytest.mark.parametrize(
@@ -193,7 +251,9 @@ def test_incomplete_answers_are_reported_as_failures(stub_server, capsys, respon
     assert len(stub_server["requests"]) == 1
 
 
-def test_total_budget_cancels_pending_agent_call(stub_server, monkeypatch, capsys):
+def test_total_budget_cancels_pending_agent_call(
+    stub_server, monkeypatch, capsys, captured_http_clients,
+):
     state = {"started": False, "cancelled": False}
 
     class WaitingAgent:
@@ -213,6 +273,35 @@ def test_total_budget_cancels_pending_agent_call(stub_server, monkeypatch, capsy
     assert output.out == ""
     assert "超过总时间预算，已停止等待" in output.err
     assert state == {"started": True, "cancelled": True}
+    assert stub_server["requests"] == []
+    assert len(captured_http_clients) == 2
+    assert all(client.is_closed for client in captured_http_clients)
+
+
+@pytest.mark.parametrize("phase", ["model_construction", "external_cancellation"])
+def test_agent_closes_owned_http_clients_when_startup_or_run_is_interrupted(
+    stub_server, monkeypatch, phase, captured_http_clients,
+):
+    from db_agent.config import load_settings
+
+    if phase == "model_construction":
+        def fail_model(**kwargs):
+            raise ValueError("synthetic-construction-failure")
+
+        monkeypatch.setattr(agent_module, "ChatOpenAI", fail_model)
+        expected = ValueError
+    else:
+        class CancelledAgent:
+            async def ainvoke(self, *args, **kwargs):
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(agent_module, "create_agent", lambda **kwargs: CancelledAgent())
+        expected = asyncio.CancelledError
+
+    with pytest.raises(expected):
+        asyncio.run(agent_module.run_agent("离线资源清理验证", load_settings()))
+    assert len(captured_http_clients) == 2
+    assert all(client.is_closed for client in captured_http_clients)
     assert stub_server["requests"] == []
 
 
@@ -534,5 +623,169 @@ def test_analysis_cli_stdin_is_bounded(stub_server, monkeypatch, capsys):
     assert main(["db", "analyze", "--stdin"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["decision"] == "UNKNOWN"
+    assert buffer.tell() == 65
+    assert stub_server["requests"] == []
+
+
+@pytest.mark.parametrize("case", ["complete", "empty", "truncated", "rejected", "error"])
+def test_execute_query_result_is_returned_with_call_id_and_not_logged(
+    stub_server, monkeypatch, capsys, tmp_path, case,
+):
+    from db_agent.plans import PlanAnalysis
+
+    sql = "SELECT id FROM orders WHERE id = 987654321"
+    calls = []
+    decision = "REVIEW" if case == "rejected" else "ALLOW"
+    execution = {"rejected": "not_started", "error": "unknown", "truncated": "truncated"}.get(
+        case, "completed",
+    )
+    rows = [] if case == "empty" else [["private-row-marker"]]
+    data = {
+        "columns": [{"name": "id", "type": "bigint"}],
+        "rows": rows,
+        "row_count": len(rows),
+        "truncated": case == "truncated",
+        "truncation_reason": "row_limit" if case == "truncated" else None,
+        "result_bytes": 256,
+        "server_statement_status": "unknown" if case == "truncated" else "completed",
+    }
+
+    async def execute_checked(self, actual_sql, analysis_limits, query_limits):
+        calls.append(actual_sql)
+        return {
+            "check": self.check_sql(actual_sql, analysis_limits),
+            "assessment": PlanAnalysis(decision, (), {"tables": [], "operations": []}),
+            "decision": decision,
+            "execution_status": execution,
+            "result": None if case in {"rejected", "error"} else data,
+            "server_version": "8.4.11",
+            "error": (
+                {"code": "TIMEOUT", "message": "查询结果未确认。"} if case == "error" else None
+            ),
+        }
+
+    monkeypatch.setattr(MetadataConnector, "execute_checked", execute_checked)
+    stub_server["responses"] = [
+        tool_completion(("execute_query", {"sql": sql})),
+        completion("已按工具状态解释查询结果。"),
+    ]
+    assert main(["chat", "private-prompt-marker 查询订单数据"]) == 0
+    assert calls == [sql]
+    assert len(stub_server["requests"]) == 2
+    message = stub_server["requests"][1]["body"]["messages"][-1]
+    assert message["role"] == "tool"
+    assert message["tool_call_id"] == "synthetic-call-0"
+    report = json.loads(message["content"])
+    assert report["status"] == (case if case in {"rejected", "error"} else "ok")
+    assert report["decision"] == decision
+    assert report["execution_status"] == execution
+    assert report["result"] == (None if case in {"rejected", "error"} else data)
+    schemas = stub_server["requests"][0]["body"]["tools"]
+    schema = next(tool["function"]["parameters"] for tool in schemas
+                  if tool["function"]["name"] == "execute_query")
+    assert set(schema["properties"]) == {"sql"}
+    assert schema["required"] == ["sql"]
+    logs = "\n".join(path.read_text() for path in (tmp_path / "outputs/runs").glob("*.jsonl"))
+    for private in (sql, "987654321", "private-row-marker", "private-prompt-marker", TEST_KEY):
+        assert private not in logs
+    events = [json.loads(line) for line in logs.splitlines()]
+    event = next(event for event in events if event["event"] == "query_finished")
+    assert event["decision"] == decision
+    assert event["execution_status"] == execution
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("arguments", [
+    {}, {"sql": 123}, {"sql": None}, {"sql": ""}, {"sql": ["SELECT id FROM orders"]},
+    {"sql": "SELECT id FROM orders", "database": "mysql"},
+    {"sql": "SELECT id FROM orders", "approved": True},
+    {"sql": "SELECT id FROM orders", "report_id": "old-report"},
+    {"sql": "SELECT id FROM orders", "max_rows": 999999},
+])
+def test_execute_query_tool_accepts_only_a_strict_sql_argument(
+    stub_server, monkeypatch, capsys, arguments,
+):
+    from db_agent.query import QueryService
+
+    async def execute(self, sql):
+        pytest.fail("invalid execute_query arguments reached the application service")
+
+    monkeypatch.setattr(QueryService, "execute", execute)
+    stub_server["responses"] = [
+        tool_completion(("execute_query", arguments)),
+        completion("查询工具参数无效。"),
+    ]
+    assert main(["chat", "查询订单"]) == 0
+    message = stub_server["requests"][1]["body"]["messages"][-1]
+    assert message["tool_call_id"] == "synthetic-call-0"
+    assert "工具参数无效" in message["content"]
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(("status", "execution", "expected_exit"), [
+    ("ok", "completed", 0), ("ok", "truncated", 0),
+    ("rejected", "not_started", 3), ("error", "unknown", 1),
+])
+def test_query_cli_without_model_credentials_uses_business_status_for_exit_code(
+    stub_server, monkeypatch, capsys, status, execution, expected_exit,
+):
+    from db_agent.query import QueryService
+
+    for name in ("DB_AGENT_API_KEY", "DB_AGENT_MODEL", "DB_AGENT_OPENAI_BASE_URL"):
+        monkeypatch.delenv(name)
+    calls = []
+    response = {
+        "status": status,
+        "decision": "REVIEW" if status == "rejected" else "ALLOW",
+        "execution_status": execution,
+        "result": {"rows": [], "row_count": 0} if status == "ok" else None,
+        "error": {"code": "TIMEOUT", "message": "结果未确认。"} if status == "error" else None,
+    }
+
+    async def execute(self, sql):
+        calls.append(sql)
+        return response
+
+    monkeypatch.setattr(QueryService, "execute", execute)
+    assert main(["db", "query", "SELECT id FROM orders"]) == expected_exit
+    output = capsys.readouterr()
+    assert json.loads(output.out) == response
+    assert output.err == ""
+    assert calls == ["SELECT id FROM orders"]
+    assert stub_server["requests"] == []
+
+
+def test_query_cli_direct_static_rejection_uses_exit_three_without_connecting(
+    stub_server, monkeypatch, capsys,
+):
+    from db_agent import db
+
+    async def connect(**kwargs):
+        pytest.fail("a blocked CLI query must not connect")
+
+    monkeypatch.setattr(db.aiomysql, "connect", connect)
+    assert main(["db", "query", "DELETE FROM orders"]) == 3
+    output = capsys.readouterr()
+    response = json.loads(output.out)
+    assert response["status"] == "rejected"
+    assert response["decision"] == "BLOCK"
+    assert response["execution_status"] == "not_started"
+    assert response["result"] is None
+    assert output.err == ""
+    assert stub_server["requests"] == []
+
+
+def test_query_cli_stdin_reads_only_the_sql_budget_plus_one(stub_server, monkeypatch, capsys):
+    import io
+    import sys
+
+    monkeypatch.setenv("DB_AGENT_ANALYSIS_MAX_SQL_BYTES", "64")
+    buffer = io.BytesIO(b"SELECT '" + b"x" * 100000 + b"' FROM orders")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(buffer))
+    assert main(["db", "query", "--stdin"]) == 3
+    output = capsys.readouterr()
+    response = json.loads(output.out)
+    assert response["decision"] == "UNKNOWN"
+    assert response["execution_status"] == "not_started"
     assert buffer.tell() == 65
     assert stub_server["requests"] == []

@@ -30,6 +30,10 @@ class RunRecord:
         policy_version: str | None = None,
         sql_fingerprint: str | None = None,
         rule_ids: list[str] | None = None,
+        result_id: str | None = None,
+        execution_status: str | None = None,
+        row_count: int | None = None,
+        truncated: bool | None = None,
     ) -> None:
         if self.failed:
             return
@@ -50,6 +54,10 @@ class RunRecord:
                     "policy_version": policy_version,
                     "sql_fingerprint": sql_fingerprint,
                     "rule_ids": rule_ids,
+                    "result_id": result_id,
+                    "execution_status": execution_status,
+                    "row_count": row_count,
+                    "truncated": truncated,
                 }.items()
                 if value is not None
             },

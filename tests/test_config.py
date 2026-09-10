@@ -8,6 +8,7 @@ from db_agent.config import (
     ConfigurationError,
     load_analysis_settings,
     load_database_settings,
+    load_query_settings,
     load_settings,
 )
 
@@ -48,6 +49,43 @@ def test_analysis_settings_are_independent_and_dotenv_wins(monkeypatch, tmp_path
     assert settings.review_scan_rows == 250
     assert settings.max_sql_bytes == 16384
     assert settings.timeout_seconds == 10
+
+
+def test_query_settings_defaults_require_neither_model_nor_database_credentials():
+    settings = load_query_settings()
+    assert settings.max_rows == 100
+    assert settings.max_result_bytes == 32768
+    assert settings.max_columns == 64
+    assert settings.execution_timeout_seconds == 5
+    assert settings.operation_timeout_seconds == 15
+
+
+def test_query_settings_dotenv_wins_and_environment_fills_missing_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("DB_AGENT_QUERY_MAX_ROWS", "80")
+    monkeypatch.setenv("DB_AGENT_QUERY_MAX_COLUMNS", "12")
+    monkeypatch.setenv("DB_AGENT_MYSQL_MAX_METADATA_ROWS", "999")
+    (tmp_path / ".env").write_text("DB_AGENT_QUERY_MAX_ROWS=7\nUNRELATED=ignored\n")
+    settings = load_query_settings()
+    assert settings.max_rows == 7
+    assert settings.max_columns == 12
+    assert settings.max_result_bytes == 32768
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("MAX_ROWS", "0"), ("MAX_ROWS", "1001"), ("MAX_ROWS", "1.5"),
+    ("MAX_RESULT_BYTES", "1023"), ("MAX_RESULT_BYTES", "131073"),
+    ("MAX_COLUMNS", "0"), ("MAX_COLUMNS", "257"),
+    ("EXECUTION_TIMEOUT_SECONDS", "0"), ("EXECUTION_TIMEOUT_SECONDS", "60.1"),
+    ("EXECUTION_TIMEOUT_SECONDS", "nan"), ("EXECUTION_TIMEOUT_SECONDS", "inf"),
+    ("OPERATION_TIMEOUT_SECONDS", "-1"), ("OPERATION_TIMEOUT_SECONDS", "120.1"),
+    ("OPERATION_TIMEOUT_SECONDS", "-inf"), ("OPERATION_TIMEOUT_SECONDS", "nan"),
+    ("MAX_ROWS", "private-invalid-budget"),
+])
+def test_query_settings_reject_invalid_budgets_without_exposing_values(monkeypatch, field, value):
+    monkeypatch.setenv(f"DB_AGENT_QUERY_{field}", value)
+    with pytest.raises(ConfigurationError) as caught:
+        load_query_settings()
+    assert str(caught.value) == f"配置缺失或无效：DB_AGENT_QUERY_{field}"
 
 
 @pytest.mark.parametrize(

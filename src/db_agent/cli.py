@@ -12,9 +12,11 @@ from db_agent.config import (
     ConfigurationError,
     load_analysis_settings,
     load_database_settings,
+    load_query_settings,
     load_settings,
 )
 from db_agent.db import DatabaseError, MetadataConnector
+from db_agent.query import QueryService
 from db_agent.records import RunRecord
 
 
@@ -30,9 +32,15 @@ async def run_database_command(args, connector: MetadataConnector, record: RunRe
             result = await SqlAnalysisService(connector, args.analysis_settings, record).analyze(
                 args.sql
             )
+        elif args.db_command == "query":
+            result = await QueryService(
+                connector, args.analysis_settings, args.query_settings, record
+            ).execute(args.sql)
         else:
             result = await connector.describe_table(args.table)
         code, status = None, "ok"
+        if args.db_command == "query" and result["status"] == "error":
+            code, status = result["error"]["code"], "error"
         return result
     except DatabaseError as exc:
         code = exc.code
@@ -52,26 +60,34 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("config", help="校验配置，仅显示配置状态")
     commands.add_parser("check", help="调用一次模型，检查连通性")
-    chat = commands.add_parser("chat", help="进行一次带元数据和 SQL 诊断工具的独立问答")
+    chat = commands.add_parser("chat", help="进行一次带元数据、诊断和只读查询工具的独立问答")
     chat.add_argument("prompt", help="问题或需要解释的 SQL")
-    db = commands.add_parser("db", help="直接检查数据库、读取元数据或预检 SQL，不调用模型")
+    db = commands.add_parser("db", help="直接检查数据库、预检或受控查询，不调用模型")
     db_commands = db.add_subparsers(dest="db_command", required=True)
     db_commands.add_parser("check", help="检查只读数据库连接")
     db_commands.add_parser("tables", help="列出授权的业务表")
     describe = db_commands.add_parser("describe", help="读取一张授权表的字段和索引")
     describe.add_argument("table", help="单个表名")
-    analyze = db_commands.add_parser("analyze", help="SQL 静态预检与普通 EXPLAIN 诊断")
-    source = analyze.add_mutually_exclusive_group(required=True)
-    source.add_argument("sql", nargs="?", help="一条完整 SQL；含敏感字面值时建议使用 --stdin")
-    source.add_argument("--stdin", action="store_true", help="从标准输入读取受长度限制的 UTF-8 SQL")
+    for name, help_text in (
+        ("analyze", "SQL 静态预检与普通 EXPLAIN 诊断"),
+        ("query", "执行通过完整预检的只读 SELECT"),
+    ):
+        command = db_commands.add_parser(name, help=help_text)
+        source = command.add_mutually_exclusive_group(required=True)
+        source.add_argument("sql", nargs="?", help="一条完整 SQL；含敏感字面值时建议使用 --stdin")
+        source.add_argument(
+            "--stdin", action="store_true", help="从标准输入读取有长度限制的 UTF-8 SQL"
+        )
     args = parser.parse_args(argv)
     if args.command == "chat" and not args.prompt.strip():
         parser.error("问题不能为空")
 
     try:
         if args.command == "db":
-            if args.db_command == "analyze":
+            if args.db_command in {"analyze", "query"}:
                 args.analysis_settings = load_analysis_settings()
+                if args.db_command == "query":
+                    args.query_settings = load_query_settings()
                 if args.stdin:
                     try:
                         raw = sys.stdin.buffer.read(args.analysis_settings.max_sql_bytes + 1)
@@ -82,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
             with RunRecord() as record:
                 result = asyncio.run(run_database_command(args, connector, record))
             print(json.dumps(result, ensure_ascii=False, indent=2))
+            if args.db_command == "query":
+                return {"ok": 0, "rejected": 3, "error": 1}[result["status"]]
             return 0
         settings = load_settings()
         if args.command == "config":
@@ -93,8 +111,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         connector = MetadataConnector(load_database_settings()) if args.command == "chat" else None
         analysis_settings = load_analysis_settings() if connector else None
+        query_settings = load_query_settings() if connector else None
         with RunRecord() as record:
-            answer = asyncio.run(run_agent(prompt, settings, connector, record, analysis_settings))
+            answer = asyncio.run(run_agent(
+                prompt, settings, connector, record, analysis_settings, query_settings
+            ))
             if args.command == "check":
                 if answer != "DB_AGENT_OK":
                     raise AgentResponseError("模型已响应，但未返回预期的连通性确认文本")

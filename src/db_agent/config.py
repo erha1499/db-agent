@@ -162,6 +162,18 @@ class AnalysisSettings(_ProjectSettings):
     review_sort_rows: int = Field(default=100000, ge=1, le=1000000000)
 
 
+class QuerySettings(_ProjectSettings):
+    """Independent budgets for one guarded SELECT and its returned result."""
+
+    model_config = SettingsConfigDict(env_prefix="DB_AGENT_QUERY_")
+
+    max_rows: int = Field(default=100, ge=1, le=1000)
+    max_result_bytes: int = Field(default=32768, ge=1024, le=131072)
+    max_columns: int = Field(default=64, ge=1, le=256)
+    execution_timeout_seconds: float = Field(default=5, gt=0, le=60, allow_inf_nan=False)
+    operation_timeout_seconds: float = Field(default=15, gt=0, le=120, allow_inf_nan=False)
+
+
 _SettingsT = TypeVar("_SettingsT", bound=_ProjectSettings)
 
 
@@ -195,3 +207,8 @@ def load_database_settings() -> DatabaseSettings:
 def load_analysis_settings() -> AnalysisSettings:
     """Load SQL assessment policy without requiring model credentials."""
     return _load_settings(AnalysisSettings)
+
+
+def load_query_settings() -> QuerySettings:
+    """Load SELECT budgets without requiring model credentials."""
+    return _load_settings(QuerySettings)

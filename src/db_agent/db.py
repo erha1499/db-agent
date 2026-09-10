@@ -1,4 +1,4 @@
-"""受控 MySQL 元数据和普通 EXPLAIN 连接器，不执行业务查询。"""
+"""受控 MySQL 连接器：元数据、普通 EXPLAIN 与强制预检的只读 SELECT。"""
 
 import asyncio
 import json
@@ -9,10 +9,13 @@ from contextlib import asynccontextmanager
 
 import aiomysql
 
-from db_agent.config import AnalysisSettings, DatabaseSettings
+from db_agent.config import AnalysisSettings, DatabaseSettings, QuerySettings
+from db_agent.plans import analyze_plan
 from db_agent.policy import SqlCheck, check_sql
+from db_agent.results import ResultError, read_query_result
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
+_READ_ONLY_TRANSACTION_STATUS = 0x2001  # MySQL IN_TRANS | IN_TRANS_READONLY.
 _SUPPORTED_SQL_MODES = frozenset(
     {
         "ALLOW_INVALID_DATES", "ERROR_FOR_DIVISION_BY_ZERO", "NO_AUTO_VALUE_ON_ZERO",
@@ -37,7 +40,7 @@ class DatabaseError(RuntimeError):
 
 
 class MetadataConnector:
-    """每个实例一次只处理一个元数据请求，超时预算包括排队。"""
+    """每个实例顺序处理受控数据库请求，总超时预算包括排队。"""
 
     def __init__(self, settings: DatabaseSettings):
         self._settings = settings.model_copy(deep=True)
@@ -62,49 +65,151 @@ class MetadataConnector:
         if remaining <= 0:
             raise DatabaseError("TIMEOUT", "SQL 分析超过时间预算，未请求执行计划")
         async with self._connection(timeout_seconds=remaining) as connection:
-            session = await self._fetch(
-                connection,
-                "SELECT VERSION() AS server_version, DATABASE() AS database_name, "
-                "@@SESSION.sql_mode AS sql_mode",
-                (), [],
-            )
-            version = self._validate_analysis_session(session)
-            for statement in (
-                "SET SESSION explain_json_format_version = 1",
-                "SET SESSION end_markers_in_json = OFF",
-            ):
-                await self._fetch(connection, statement, (), [])
-            formats = await self._fetch(
-                connection,
-                "SELECT @@SESSION.explain_json_format_version AS json_format_version, "
-                "@@SESSION.end_markers_in_json AS end_markers",
-                (), [],
-            )
-            if (
-                len(formats) != 1
-                or formats[0].get("json_format_version") != 1
-                or formats[0].get("end_markers") != 0
-            ):
-                raise DatabaseError("UNSUPPORTED_PLAN_FORMAT", "未能确认 MySQL JSON 执行计划版本 1")
-            for table in checked.tables:
-                self.validate_table(table)
-                rows = await self._fetch(
-                    connection,
-                    "SELECT TABLE_TYPE AS type FROM information_schema.TABLES "
-                    "WHERE CAST(TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY) "
-                    "AND CAST(TABLE_NAME AS BINARY) = CAST(%s AS BINARY) LIMIT 1",
-                    (self.database, table), [],
-                )
-                if not rows:
-                    raise DatabaseError("TABLE_NOT_FOUND", "授权表不存在或当前数据库账号不可见")
-                if rows[0].get("type") != "BASE TABLE":
-                    raise DatabaseError(
-                        "UNSUPPORTED_TABLE", "SQL 分析仅支持基础表，不支持视图等对象"
-                    )
-            # Never rewrite the checked SQL or expose a raw execute/explain tool.
-            plan = await self._read_plan(connection, sql, limits)
+            plan, version = await self._collect_plan(connection, sql, checked, limits)
             result.update(plan=plan, server_version=version)
             return result
+
+    async def execute_checked(
+        self, sql: str, analysis_limits: AnalysisSettings, query_limits: QuerySettings,
+    ) -> dict:
+        """Plan and execute the current SQL in one connection; no cached approval input."""
+        started = time.monotonic()
+        checked = self.check_sql(sql, analysis_limits)
+        outcome = {
+            "check": checked, "assessment": None, "server_version": None, "result": None,
+            "decision": checked.decision, "execution_status": "not_started", "error": None,
+        }
+        if checked.decision != "ALLOW":
+            return outcome
+        phase = "analysis"
+        try:
+            remaining = query_limits.operation_timeout_seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                raise DatabaseError("TIMEOUT", "查询操作超过总时间预算，尚未派发业务 SQL")
+            async with self._connection(timeout_seconds=remaining) as connection:
+                async with asyncio.timeout(analysis_limits.timeout_seconds):
+                    await self._fetch(connection, "SET SESSION time_zone = '+00:00'", (), [])
+                    await self._fetch(
+                        connection, "SET SESSION transaction_isolation = 'READ-COMMITTED'", (), [],
+                    )
+                    await self._fetch(
+                        connection, "SET SESSION lock_wait_timeout = %s",
+                        (max(1, math.ceil(min(analysis_limits.timeout_seconds, remaining))),), [],
+                    )
+                    await self._fetch(
+                        connection, "SET SESSION max_execution_time = %s",
+                        (max(1, math.ceil(analysis_limits.timeout_seconds * 1000)),), [],
+                    )
+                    await self._fetch(connection, "START TRANSACTION READ ONLY", (), [])
+                    self._require_readonly_transaction(connection)
+                    plan, version = await self._collect_plan(
+                        connection, sql, checked, analysis_limits, require_innodb=True,
+                    )
+                    assessment = analyze_plan(plan, analysis_limits, checked.aliases)
+                    outcome.update(
+                        assessment=assessment, server_version=version, decision=assessment.decision,
+                    )
+                    if assessment.decision != "ALLOW":
+                        return outcome
+                    # Recheck object kind on the same transaction before executing.
+                    await self._validate_analysis_tables(connection, checked, require_innodb=True)
+                await self._fetch(
+                    connection, "SET SESSION max_execution_time = %s",
+                    (max(1, math.ceil(query_limits.execution_timeout_seconds * 1000)),), [],
+                )
+                # aiomysql refreshes server_status on this OK packet, not SELECT EOF.
+                self._require_readonly_transaction(connection)
+                cursor = await connection.cursor(aiomysql.SSCursor)
+                phase = "execution"
+                async with asyncio.timeout(query_limits.execution_timeout_seconds):
+                    outcome["execution_status"] = "unknown"
+                    # None preserves literal % characters; the SQL is never rewritten.
+                    await cursor.execute(sql, None)
+                    result = await read_query_result(cursor, query_limits)
+                    if result["server_statement_status"] == "completed":
+                        await cursor.close()
+                    outcome.update(
+                        result=result,
+                        execution_status="truncated" if result["truncated"] else "completed",
+                    )
+        except (DatabaseError, ResultError) as exc:
+            if exc.code == "PERMISSION_DENIED":
+                outcome["decision"] = "BLOCK"
+            elif phase == "analysis":
+                outcome["decision"] = "UNKNOWN"
+            outcome["error"] = {"code": exc.code, "message": exc.message}
+            outcome["result"] = None
+            if outcome["execution_status"] != "not_started":
+                outcome["execution_status"] = "unknown"
+        except TimeoutError:
+            if phase == "analysis":
+                outcome["decision"] = "UNKNOWN"
+            outcome["error"] = {
+                "code": "TIMEOUT", "message": "查询阶段超过时间预算，已停止等待并清理连接。",
+            }
+            outcome["result"] = None
+            if outcome["execution_status"] != "not_started":
+                outcome["execution_status"] = "unknown"
+        # CancelledError is intentionally not caught; _connection still closes the socket.
+        return outcome
+
+    @staticmethod
+    def _require_readonly_transaction(connection) -> None:
+        status = getattr(connection, "server_status", None)
+        if not isinstance(status, int) or status & _READ_ONLY_TRANSACTION_STATUS != (
+            _READ_ONLY_TRANSACTION_STATUS
+        ):
+            raise DatabaseError("TRANSACTION_STATE", "未能确认当前连接处于显式只读事务")
+
+    async def _collect_plan(
+        self, connection, sql: str, checked: SqlCheck, limits: AnalysisSettings,
+        *, require_innodb: bool = False,
+    ) -> tuple[dict, str]:
+        session = await self._fetch(
+            connection,
+            "SELECT VERSION() AS server_version, DATABASE() AS database_name, "
+            "@@SESSION.sql_mode AS sql_mode",
+            (), [],
+        )
+        version = self._validate_analysis_session(session)
+        for statement in (
+            "SET SESSION explain_json_format_version = 1",
+            "SET SESSION end_markers_in_json = OFF",
+        ):
+            await self._fetch(connection, statement, (), [])
+        formats = await self._fetch(
+            connection,
+            "SELECT @@SESSION.explain_json_format_version AS json_format_version, "
+            "@@SESSION.end_markers_in_json AS end_markers",
+            (), [],
+        )
+        if (
+            len(formats) != 1 or formats[0].get("json_format_version") != 1
+            or formats[0].get("end_markers") != 0
+        ):
+            raise DatabaseError("UNSUPPORTED_PLAN_FORMAT", "未能确认 MySQL JSON 执行计划版本 1")
+        await self._validate_analysis_tables(connection, checked, require_innodb=require_innodb)
+        return await self._read_plan(connection, sql, limits), version
+
+    async def _validate_analysis_tables(
+        self, connection, checked: SqlCheck, *, require_innodb: bool = False,
+    ) -> None:
+        for table in checked.tables:
+            self.validate_table(table)
+            engine_column = ", ENGINE AS engine" if require_innodb else ""
+            rows = await self._fetch(
+                connection,
+                f"SELECT TABLE_TYPE AS type{engine_column} FROM information_schema.TABLES "
+                "WHERE CAST(TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY) "
+                "AND CAST(TABLE_NAME AS BINARY) = CAST(%s AS BINARY) LIMIT 1",
+                (self.database, table), [],
+            )
+            if not rows:
+                raise DatabaseError("TABLE_NOT_FOUND", "授权表不存在或当前数据库账号不可见")
+            if rows[0].get("type") != "BASE TABLE":
+                raise DatabaseError("UNSUPPORTED_TABLE", "SQL 分析仅支持基础表，不支持视图等对象")
+            if require_innodb and rows[0].get("engine") != "InnoDB":
+                raise DatabaseError("UNSUPPORTED_ENGINE", "查询执行仅支持 InnoDB 基础表")
 
     def _validate_analysis_session(self, rows: list) -> str:
         if len(rows) != 1 or rows[0].get("database_name") != self.database:
@@ -323,22 +428,22 @@ class MetadataConnector:
             if error_number in {1044, 1045, 1142, 1143, 1227}:
                 code, message = "PERMISSION_DENIED", "数据库认证或权限校验失败"
             elif error_number in {1205, 1317, 3024}:
-                code, message = "TIMEOUT", "数据库元数据请求超时或被中断，连接已清理"
+                code, message = "TIMEOUT", "数据库请求超时或被中断，连接已清理"
             elif error_number in {2002, 2003, 2006, 2013, 2055}:
                 code, message = "CONNECTION_ERROR", "无法连接数据库或连接已中断"
             elif error_number == 1064:
-                code, message = "SYNTAX_ERROR", "数据库拒绝 SQL 语法，未取得执行计划"
+                code, message = "SYNTAX_ERROR", "数据库拒绝 SQL 语法"
             elif error_number in {1052, 1054, 1146}:
-                code, message = "SQL_REFERENCE_ERROR", "SQL 的表或列引用无效，未取得执行计划"
+                code, message = "SQL_REFERENCE_ERROR", "SQL 的表或列引用无效"
             else:
                 code, message = "DATABASE_ERROR", "数据库请求失败"
             raise DatabaseError(code, message) from None
         except OSError:
             raise DatabaseError("CONNECTION_ERROR", "无法连接数据库或连接已中断") from None
-        except DatabaseError:
+        except (DatabaseError, ResultError):
             raise
         except Exception:
-            raise DatabaseError("DATABASE_ERROR", "数据库元数据请求未返回可识别结果") from None
+            raise DatabaseError("DATABASE_ERROR", "数据库请求未返回可识别结果") from None
 
     async def _fetch(self, connection, query: str, params: tuple, all_rows: list) -> list:
         cursor = await connection.cursor()
