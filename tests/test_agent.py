@@ -113,6 +113,15 @@ def captured_http_clients(monkeypatch):
     return clients
 
 
+@pytest.fixture
+def isolate_query_reports_from_semantic_review(monkeypatch):
+    """Opt-in offline isolation for report/termination tests, not semantic approval tests."""
+    async def prepare_query(self, request):
+        return request
+
+    monkeypatch.setattr(agent_module.RuntimeMiddleware, "_prepare_query", prepare_query)
+
+
 def test_chat_uses_project_endpoint_credentials_and_budgets(stub_server, capsys):
     assert main(["chat", "解释 SELECT 1 的含义"]) == 0
 
@@ -538,7 +547,7 @@ def test_total_timeout_cancels_tool_and_closes_database(stub_server, monkeypatch
     assert tool_event["status"] == "error"
     assert tool_event["code"] == "CANCELLED"
     assert events[-1]["status"] == "error"
-    assert events[-1]["code"] == "TimeoutError"
+    assert events[-1]["code"] == "AgentResponseError"
 
 
 def test_sql_block_is_business_result_returned_to_main_model(
@@ -628,8 +637,9 @@ def test_analysis_cli_stdin_is_bounded(stub_server, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("case", ["complete", "empty", "truncated", "rejected", "error"])
-def test_execute_query_result_is_returned_with_call_id_and_not_logged(
+def test_execute_query_service_result_is_rendered_without_model_feedback_or_raw_logs(
     stub_server, monkeypatch, capsys, tmp_path, case,
+    isolate_query_reports_from_semantic_review,
 ):
     from db_agent.plans import PlanAnalysis
 
@@ -671,15 +681,9 @@ def test_execute_query_result_is_returned_with_call_id_and_not_logged(
     ]
     assert main(["chat", "private-prompt-marker 查询订单数据"]) == 0
     assert calls == [sql]
-    assert len(stub_server["requests"]) == 2
-    message = stub_server["requests"][1]["body"]["messages"][-1]
-    assert message["role"] == "tool"
-    assert message["tool_call_id"] == "synthetic-call-0"
-    report = json.loads(message["content"])
-    assert report["status"] == (case if case in {"rejected", "error"} else "ok")
-    assert report["decision"] == decision
-    assert report["execution_status"] == execution
-    assert report["result"] == (None if case in {"rejected", "error"} else data)
+    assert len(stub_server["requests"]) == 1
+    assert len(stub_server["responses"]) == 1  # Unused final text is never requested.
+    assert "private-row-marker" not in json.dumps(stub_server["requests"])
     schemas = stub_server["requests"][0]["body"]["tools"]
     schema = next(tool["function"]["parameters"] for tool in schemas
                   if tool["function"]["name"] == "execute_query")
@@ -713,22 +717,29 @@ def test_execute_query_result_is_returned_with_call_id_and_not_logged(
     {"sql": "SELECT id FROM orders", "max_rows": 999999},
 ])
 def test_execute_query_tool_accepts_only_a_strict_sql_argument(
-    stub_server, monkeypatch, capsys, arguments,
+    stub_server, monkeypatch, capsys, tmp_path, arguments,
 ):
     from db_agent.query import QueryService
 
     async def execute(self, sql):
         pytest.fail("invalid execute_query arguments reached the application service")
 
+    async def describe(self, table):
+        pytest.fail("invalid arguments must be rejected before schema collection or review")
+
     monkeypatch.setattr(QueryService, "execute", execute)
+    monkeypatch.setattr(MetadataConnector, "describe_table", describe)
     stub_server["responses"] = [
         tool_completion(("execute_query", arguments)),
         completion("查询工具参数无效。"),
     ]
     assert main(["chat", "查询订单"]) == 0
-    message = stub_server["requests"][1]["body"]["messages"][-1]
-    assert message["tool_call_id"] == "synthetic-call-0"
-    assert "工具参数无效" in message["content"]
+    assert len(stub_server["requests"]) == 1
+    assert len(stub_server["responses"]) == 1
+    path = next((tmp_path / "outputs/runs").glob("*.jsonl"))
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    event = next(event for event in events if event["event"] == "tool_finished")
+    assert event["code"] == "INVALID_ARGUMENT" and event["status"] == "error"
     assert capsys.readouterr().err == ""
 
 
@@ -802,7 +813,7 @@ def test_query_cli_stdin_reads_only_the_sql_budget_plus_one(stub_server, monkeyp
 
 
 def test_observed_queries_capture_only_service_evidence_and_exact_call_order(
-    stub_server, monkeypatch,
+    stub_server, monkeypatch, isolate_query_reports_from_semantic_review,
 ):
     from db_agent.config import load_database_settings, load_settings
     from db_agent.presentation import render_queries
@@ -833,7 +844,7 @@ def test_observed_queries_capture_only_service_evidence_and_exact_call_order(
     observed = asyncio.run(agent_module.run_agent_observed(
         "查询订单", load_settings(), MetadataConnector(load_database_settings()),
     ))
-    assert observed.model_calls == 2
+    assert observed.model_calls == 1
     assert observed.tool_calls == ["execute_query", "execute_query"]
     assert [query.sql for query in observed.queries] == [first_sql, second_sql]
     assert [query.report for query in observed.queries] == [reports[first_sql], reports[second_sql]]
@@ -842,7 +853,8 @@ def test_observed_queries_capture_only_service_evidence_and_exact_call_order(
     assert '"30.00"' in observed.answer and "返回 0 行" in observed.answer
     reports[first_sql]["result"]["rows"][0][0] = "changed-after-capture"
     assert observed.queries[0].report["result"]["rows"] == [["30.00"]]
-    assert len(stub_server["requests"]) == 2
+    assert len(stub_server["requests"]) == 1
+    assert len(stub_server["responses"]) == 1
 
 
 @pytest.mark.parametrize("with_metadata", [False, True])
@@ -871,7 +883,7 @@ def test_observed_nonquery_answers_keep_model_explanation_and_no_query_evidence(
 
 @pytest.mark.parametrize("arguments", [{"sql": 123}, {"sql": "SELECT id FROM orders"}])
 def test_failed_query_attempt_has_no_trusted_report_and_cannot_publish_fake_model_data(
-    stub_server, monkeypatch, arguments,
+    stub_server, monkeypatch, arguments, isolate_query_reports_from_semantic_review,
 ):
     from db_agent.config import load_database_settings, load_settings
     from db_agent.presentation import render_queries
@@ -894,12 +906,14 @@ def test_failed_query_attempt_has_no_trusted_report_and_cannot_publish_fake_mode
     assert observed.answer == render_queries([], missing_reports=1)
     assert "999999" not in observed.answer and "private-driver-error" not in observed.answer
     assert calls == ([arguments["sql"]] if isinstance(arguments["sql"], str) else [])
+    assert observed.model_calls == 1 and len(stub_server["requests"]) == 1
 
 
 @pytest.mark.parametrize("failure_first", [False, True])
 @pytest.mark.parametrize("failure", ["arguments", "service"])
 def test_mixed_query_attempts_keep_success_and_report_missing_evidence(
     stub_server, monkeypatch, failure_first, failure,
+    isolate_query_reports_from_semantic_review,
 ):
     from db_agent.config import load_database_settings, load_settings
     from db_agent.presentation import render_queries
@@ -929,7 +943,7 @@ def test_mixed_query_attempts_keep_success_and_report_missing_evidence(
         "查询两项数据", load_settings(), MetadataConnector(load_database_settings()),
     ))
     assert observed.tool_calls == ["execute_query", "execute_query"]
-    assert observed.model_calls == 2 and len(stub_server["requests"]) == 2
+    assert observed.model_calls == 1 and len(stub_server["requests"]) == 1
     assert len(observed.queries) == 1
     assert observed.queries[0].sql == sql and observed.queries[0].report == report
     assert observed.answer == render_queries(observed.queries, missing_reports=1)
@@ -940,7 +954,9 @@ def test_mixed_query_attempts_keep_success_and_report_missing_evidence(
         assert claim not in observed.answer
 
 
-def test_query_evidence_does_not_bypass_agent_call_budget(stub_server, monkeypatch):
+def test_static_query_rejection_ends_before_an_unneeded_model_budget_check(
+    stub_server, monkeypatch,
+):
     from db_agent.config import load_database_settings, load_settings
     from db_agent.query import QueryService
 
@@ -950,10 +966,13 @@ def test_query_evidence_does_not_bypass_agent_call_budget(stub_server, monkeypat
     monkeypatch.setattr(QueryService, "execute", execute)
     monkeypatch.setenv("DB_AGENT_MAX_MODEL_CALLS", "1")
     stub_server["responses"] = [tool_completion(("execute_query", {"sql": "DELETE FROM orders"}))]
-    with pytest.raises(agent_module.AgentResponseError, match="调用次数达到预算"):
-        asyncio.run(agent_module.run_agent_observed(
-            "查询订单", load_settings(), MetadataConnector(load_database_settings()),
-        ))
+    observed = asyncio.run(agent_module.run_agent_observed(
+        "拒绝删除订单", load_settings(), MetadataConnector(load_database_settings()),
+    ))
+    assert observed.model_calls == 1
+    assert observed.tool_calls == ["execute_query"]
+    assert observed.queries[0].report["decision"] == "BLOCK"
+    assert "未执行" in observed.answer
     assert len(stub_server["requests"]) == 1
 
 
@@ -962,44 +981,31 @@ def test_graph_allows_four_model_calls_but_fifth_is_stopped_by_model_budget(
     stub_server, monkeypatch, attempt_fifth,
 ):
     from db_agent.config import load_database_settings, load_settings
-    from db_agent.query import QueryService
 
-    rejected_sql = "SELECT COALESCE(SUM(total_amount), 0) AS total FROM orders"
-    allowed_sql = "SELECT SUM(total_amount) AS total FROM orders"
-    service_calls = []
+    metadata_calls = []
 
     async def describe(self, table):
+        metadata_calls.append(("describe_table", table))
         return {"table": table, "columns": [{"name": "total_amount", "type": "decimal"}],
                 "indexes": []}
 
     async def tables(self):
-        return {"tables": ["orders"]}
-
-    async def execute(self, sql):
-        service_calls.append(sql)
-        if sql == rejected_sql:
-            return {"status": "rejected", "decision": "BLOCK", "execution_status": "not_started",
-                    "findings": [{"message": "不支持 COALESCE。"}], "result": None}
-        assert sql == allowed_sql
-        return {"status": "ok", "decision": "ALLOW", "execution_status": "completed",
-                "session_time_zone": "+00:00",
-                "result": {"columns": [{"name": "total", "type": "decimal"}],
-                           "rows": [["30.00"]], "row_count": 1, "truncated": False}}
+        metadata_calls.append(("list_tables", None))
+        return {"tables": ["orders", "customers"]}
 
     monkeypatch.setattr(MetadataConnector, "describe_table", describe)
     monkeypatch.setattr(MetadataConnector, "list_tables", tables)
-    monkeypatch.setattr(QueryService, "execute", execute)
     monkeypatch.setenv("DB_AGENT_MAX_MODEL_CALLS", "4")
     monkeypatch.setenv("DB_AGENT_MAX_TOOL_CALLS", "6")
     stub_server["responses"] = [
         tool_completion(("describe_table", {"table": "orders"})),
-        tool_completion(("execute_query", {"sql": rejected_sql})),
-        tool_completion(("execute_query", {"sql": allowed_sql})),
-        tool_completion(("list_tables", {})) if attempt_fifth else completion("最终模型文本。"),
+        tool_completion(("describe_table", {"table": "customers"})),
+        tool_completion(("list_tables", {})),
+        tool_completion(("list_tables", {})) if attempt_fifth else completion("结构核对完成。"),
         completion("不应发起第五次模型调用。"),
     ]
     run = agent_module.run_agent_observed(
-        "查询订单金额", load_settings(), MetadataConnector(load_database_settings()),
+        "说明订单和客户结构", load_settings(), MetadataConnector(load_database_settings()),
     )
     if attempt_fifth:
         with pytest.raises(agent_module.AgentResponseError, match="调用次数达到预算") as error:
@@ -1008,12 +1014,71 @@ def test_graph_allows_four_model_calls_but_fifth_is_stopped_by_model_budget(
     else:
         observed = asyncio.run(run)
         assert observed.model_calls == 4
-        assert observed.tool_calls == ["describe_table", "execute_query", "execute_query"]
-        assert [query.report["decision"] for query in observed.queries] == ["BLOCK", "ALLOW"]
-        assert '"30.00"' in observed.answer and "当前 SQL 结果已完整返回" in observed.answer
-        assert "最终模型文本" not in observed.answer
+        assert observed.tool_calls == ["describe_table", "describe_table", "list_tables"]
+        assert observed.queries == []
+        assert observed.answer == "结构核对完成。"
     assert len(stub_server["requests"]) == 4
-    assert service_calls == [rejected_sql, allowed_sql]
+    assert metadata_calls == [
+        ("describe_table", "orders"), ("describe_table", "customers"), ("list_tables", None),
+    ] + ([("list_tables", None)] if attempt_fifth else [])
+    assert len(stub_server["responses"]) == 1
+
+
+@pytest.mark.parametrize("query_first", [False, True])
+@pytest.mark.parametrize("metadata_operation", ["describe_table", "analyze_sql"])
+def test_query_and_metadata_same_round_finish_without_extra_model_call(
+    stub_server, monkeypatch, query_first, metadata_operation,
+    isolate_query_reports_from_semantic_review,
+):
+    from db_agent.analysis import SqlAnalysisService
+    from db_agent.config import load_database_settings, load_settings
+    from db_agent.query import QueryService
+
+    expected_sql = "SELECT id FROM orders"
+    completed = []
+    report = {
+        "status": "ok", "decision": "ALLOW", "execution_status": "completed",
+        "session_time_zone": "+00:00",
+        "result": {"columns": [{"name": "id", "type": "bigint"}], "rows": [[1]],
+                   "row_count": 1, "truncated": False},
+    }
+
+    async def execute(self, sql):
+        assert sql == expected_sql
+        completed.append("execute_query")
+        return report
+
+    async def describe(self, table):
+        assert table == "orders"
+        completed.append("describe_table")
+        return {"table": table, "columns": [{"name": "id"}], "indexes": []}
+
+    async def analyze(self, sql):
+        assert sql == expected_sql
+        completed.append("analyze_sql")
+        return {"decision": "ALLOW", "findings": []}
+
+    monkeypatch.setattr(QueryService, "execute", execute)
+    monkeypatch.setattr(MetadataConnector, "describe_table", describe)
+    monkeypatch.setattr(SqlAnalysisService, "analyze", analyze)
+    monkeypatch.setenv("DB_AGENT_MAX_MODEL_CALLS", "1")
+    query_call = ("execute_query", {"sql": expected_sql})
+    metadata_call = (
+        metadata_operation,
+        {"table": "orders"} if metadata_operation == "describe_table" else {"sql": expected_sql},
+    )
+    calls = [query_call, metadata_call] if query_first else [metadata_call, query_call]
+    stub_server["responses"] = [tool_completion(*calls), completion("不应请求的最终模型文本。")]
+    observed = asyncio.run(agent_module.run_agent_observed(
+        "查询订单并查看结构或诊断", load_settings(), MetadataConnector(load_database_settings()),
+    ))
+    assert completed == [call[0] for call in calls]
+    assert observed.tool_calls == completed
+    assert observed.model_calls == 1 and len(stub_server["requests"]) == 1
+    assert len(stub_server["responses"]) == 1
+    assert len(observed.queries) == 1 and observed.queries[0].report == report
+    assert "当前 SQL 结果已完整返回" in observed.answer
+    assert "不应请求" not in observed.answer
 
 
 def test_query_capability_contract_is_sent_in_prompt_and_sql_tool_descriptions(stub_server, capsys):
@@ -1031,6 +1096,7 @@ def test_query_capability_contract_is_sent_in_prompt_and_sql_tool_descriptions(s
 
 def test_observed_query_cancellation_propagates_and_releases_clients(
     stub_server, monkeypatch, captured_http_clients,
+    isolate_query_reports_from_semantic_review,
 ):
     from db_agent.config import load_database_settings, load_settings
     from db_agent.query import QueryService

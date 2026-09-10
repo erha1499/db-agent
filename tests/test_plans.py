@@ -98,6 +98,78 @@ def test_covering_evidence_is_distinct_from_pushdown_and_never_exempts_large_sca
     assert result.decision == "REVIEW"
 
 
+@pytest.mark.parametrize("flag", ["backward_index_scan", "not_exists"])
+@pytest.mark.parametrize("value", [True, False])
+def test_index_and_join_boolean_observations_are_preserved_in_summary(limits, flag, value):
+    # Constructed fixture. MySQL 8.4's EXPLAIN manual describes these observations;
+    # mysql-server tag mysql-8.4.11/sql/opt_explain_json.cc defines their JSON keys.
+    node = {**table(access="ref", scan=2, produced=2), flag: value}
+    result = analyze_plan(plan(node), limits, {"o": "orders"})
+
+    assert result.decision == "ALLOW"
+    assert result.summary["tables"][0][flag] is value
+    assert "PLAN_COVERING_INDEX" not in {finding["rule_id"] for finding in result.findings}
+
+
+@pytest.mark.parametrize("flag", ["backward_index_scan", "not_exists"])
+@pytest.mark.parametrize("value", [0, 1, "true", None, [], {}])
+def test_index_and_join_observations_reject_nonboolean_evidence(limits, flag, value):
+    result = analyze_plan(
+        plan({**table(), flag: value}), limits, {"o": "orders"},
+    )
+
+    assert result.decision == "UNKNOWN"
+    assert flag not in result.summary["tables"][0]
+
+
+@pytest.mark.parametrize("flag", ["backward_index_scan", "not_exists"])
+def test_index_and_join_observations_do_not_exempt_a_large_scan(limits, flag):
+    node = {**table(access="index", scan=100001, produced=1), flag: True}
+    result = analyze_plan(plan(node), limits, {"o": "orders"})
+
+    assert result.decision == "REVIEW"
+    assert "PLAN_LARGE_SCAN" in {finding["rule_id"] for finding in result.findings}
+    assert result.summary["tables"][0][flag] is True
+
+
+@pytest.mark.parametrize("flag", ["backward_index_scan", "not_exists"])
+def test_index_and_join_observations_do_not_allow_other_unknown_plan_fields(limits, flag):
+    node = {**table(), flag: True, "unrecognized_scan_detail": "private-marker"}
+    result = analyze_plan(plan(node), limits, {"o": "orders"})
+
+    assert result.decision == "UNKNOWN"
+    serialized = json.dumps({"summary": result.summary, "findings": result.findings})
+    assert "unrecognized_scan_detail" not in serialized and "private-marker" not in serialized
+
+
+@pytest.mark.parametrize("operation,flag,produced,rule", [
+    (None, None, 1000001, "PLAN_LARGE_JOIN"),
+    ("ordering_operation", "using_filesort", 100001, "PLAN_LARGE_SORT_OR_TEMPORARY"),
+    ("grouping_operation", "using_temporary_table", 100001, "PLAN_LARGE_SORT_OR_TEMPORARY"),
+])
+def test_not_exists_does_not_exempt_join_sort_or_temporary_table_risk(
+    limits, operation, flag, produced, rule,
+):
+    node = {**table(access="ref", scan=11, produced=produced), "not_exists": True}
+    fixture = (
+        {"query_block": {operation: {flag: True, "table": node}}} if operation else plan(node)
+    )
+    result = analyze_plan(fixture, limits, {"o": "orders"})
+
+    assert result.decision == "REVIEW"
+    assert rule in {finding["rule_id"] for finding in result.findings}
+    assert result.summary["tables"][0]["not_exists"] is True
+
+
+def test_not_exists_cannot_replace_a_missing_row_estimate_with_zero(limits):
+    node = {**table(), "not_exists": True}
+    del node["rows_produced_per_join"]
+    result = analyze_plan(plan(node), limits, {"o": "orders"})
+
+    assert result.decision == "UNKNOWN"
+    assert "rows_produced_per_join" not in result.summary["tables"][0]
+
+
 def test_nested_join_keeps_paths_and_does_not_sum_prefix_estimates(limits):
     fixture = {
         "query_block": {

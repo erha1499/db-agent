@@ -29,7 +29,9 @@ from db_agent.records import RunRecord
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CASE_FILE = PROJECT_ROOT / "evals" / "ecommerce-v1.json"
-SUITE_FILES = {"v1": CASE_FILE, "v2": CASE_FILE.with_name("ecommerce-v2.json")}
+SUITE_FILES = {
+    name: CASE_FILE.with_name(f"ecommerce-{name}.json") for name in ("v1", "v2", "v3", "v4", "v5")
+}
 TABLES = frozenset({
     "ec_customers", "ec_products", "ec_orders", "ec_order_items", "ec_payments", "ec_refunds",
 })
@@ -53,7 +55,7 @@ def load_cases(
     split: str, path: Path | None = None, *, suite: str = "v1",
 ) -> tuple[dict, list[dict]]:
     if suite not in SUITE_FILES:
-        raise EvaluationError("评测 suite 必须为 v1 或 v2。")
+        raise EvaluationError("评测 suite 必须为 v1、v2、v3、v4 或 v5。")
     if split not in {"dev", "holdout"}:
         raise EvaluationError("评测 split 必须为 dev 或 holdout。")
     path = SUITE_FILES[suite] if path is None else path
@@ -109,10 +111,9 @@ def load_cases(
     return {
         "suite": suite, "suite_version": suite_version,
         "dataset_version": document["dataset_version"],
-        "split_role": (
-            "held_out_acceptance" if suite == "v2" and split == "holdout"
-            else "exposed_regression"
-        ),
+        # Every existing suite has now informed diagnosis or implementation.
+        # Preserve its original split and first-run reports, but label reruns honestly.
+        "split_role": "exposed_regression",
         "business_context_sha256": _digest(business_context.encode()) if business_context else None,
         "inputs_sha256": _digest(json.dumps([
             {"id": case["id"], "prompt": _prompt(case), "sql": case["sql"]}
@@ -169,10 +170,12 @@ def assess_report(case: dict, report: dict) -> list[str]:
     error = report.get("error")
     if error:
         code = error.get("code")
-        if code in {"TIMEOUT", "RESULT_LIMIT", "RESPONSE_LIMIT"}:
+        if code in {"TIMEOUT", "RESULT_LIMIT", "RESPONSE_LIMIT", "MODEL_CALL_LIMIT",
+                    "TOOL_CALL_LIMIT", "GRAPH_RECURSION_LIMIT"}:
             failures.append("budget")
         elif code in {"SYNTAX_ERROR", "SQL_REFERENCE_ERROR", "UNSUPPORTED_RESULT_TYPE",
-                      "UNSUPPORTED_RESULT_VALUE", "INVALID_RESULT"}:
+                      "UNSUPPORTED_RESULT_VALUE", "INVALID_RESULT", "SEMANTIC_MISMATCH",
+                      "SEMANTIC_UNCERTAIN"}:
             failures.append("data_error")
         else:
             failures.append("environment")
@@ -227,6 +230,8 @@ def _failure(exc: Exception) -> tuple[str, str]:
     )
 
     if isinstance(exc, AgentResponseError):
+        if exc.code in {"MODEL_CALL_LIMIT", "TOOL_CALL_LIMIT", "GRAPH_RECURSION_LIMIT", "TIMEOUT"}:
+            return "budget", exc.code
         message = str(exc)
         if message == "模型输出达到 token 上限，请缩小问题或调整输出预算":
             return "budget", "TOKEN_LIMIT"
@@ -287,6 +292,8 @@ async def run_case(
                     queries=[_trace(item.sql, item.report) for item in observed.queries],
                     model_calls=observed.model_calls, tool_calls=observed.tool_calls,
                     answer_sha256=_digest(observed.answer.encode()),
+                    semantic_reviews=observed.semantic_reviews,
+                    query_intents=observed.query_intents,
                 )
                 if len(observed.queries) != 1:
                     outcome["categories"].append("data_error")
@@ -323,9 +330,23 @@ async def run_case(
         outcome["categories"].append("budget")
         outcome["failure_code"] = "TIMEOUT"
     except Exception as exc:
+        from db_agent.agent import AgentResponseError
+        from db_agent.presentation import AgentRunResult
+
         category, code = _failure(exc)
         outcome["categories"].append(category)
         outcome["failure_code"] = code
+        if isinstance(exc, AgentResponseError) and isinstance(exc.observation, AgentRunResult):
+            observed = exc.observation
+            outcome.update(
+                queries=[_trace(item.sql, item.report) for item in observed.queries],
+                model_calls=observed.model_calls, tool_calls=observed.tool_calls,
+                semantic_reviews=observed.semantic_reviews, partial_observation=True,
+                query_intents=observed.query_intents,
+                missing_query_reports=max(
+                    0, observed.tool_calls.count("execute_query") - len(observed.queries),
+                ),
+            )
     outcome["categories"] = sorted(set(outcome["categories"]))
     outcome["passed"] = not outcome["categories"]
     outcome["duration_ms"] = round((time.monotonic() - started) * 1000)
@@ -410,7 +431,7 @@ def write_report(report: dict) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="显式运行固定本地电商业务评测")
-    parser.add_argument("--suite", choices=("v1", "v2"), default="v1")
+    parser.add_argument("--suite", choices=tuple(SUITE_FILES), default="v1")
     parser.add_argument("--mode", choices=("sql", "agent"), required=True)
     parser.add_argument("--split", choices=("dev", "holdout"), required=True)
     parser.add_argument("--repeat", type=int, required=True)

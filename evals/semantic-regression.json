@@ -1,0 +1,187 @@
+{
+  "version": "semantic-regression-v1",
+  "cases": [
+    {
+      "id": "where_customer_match",
+      "prompt": "查询 ec_orders 中 id 小于 1000 的固定样本订单，只要 customer_id 为 1 的客户订单，不限制订单状态。仅返回订单 id，并按 id 升序排列。",
+      "sql": "SELECT id FROM ec_orders WHERE id < 1000 AND customer_id = 1 ORDER BY id",
+      "expected_verdict": "match",
+      "dimension": "where_customer"
+    },
+    {
+      "id": "where_customer_mismatch",
+      "prompt": "查询 ec_orders 中 id 小于 1000 的固定样本订单，只要 customer_id 为 1 的客户订单，不限制订单状态。仅返回订单 id，并按 id 升序排列。",
+      "sql": "SELECT id FROM ec_orders WHERE id < 1000 ORDER BY id",
+      "expected_verdict": "mismatch",
+      "dimension": "where_customer"
+    },
+    {
+      "id": "where_status_match",
+      "prompt": "查询 ec_payments 中 order_id 为 2 的订单的成功支付明细。成功支付的状态值是 succeeded，失败和待处理支付都不计入。依次返回支付 id 和 amount，按支付 id 升序排列。",
+      "sql": "SELECT id, amount FROM ec_payments WHERE order_id = 2 AND status = 'succeeded' ORDER BY id",
+      "expected_verdict": "match",
+      "dimension": "where_status"
+    },
+    {
+      "id": "where_status_mismatch",
+      "prompt": "查询 ec_payments 中 order_id 为 2 的订单的成功支付明细。成功支付的状态值是 succeeded，失败和待处理支付都不计入。依次返回支付 id 和 amount，按支付 id 升序排列。",
+      "sql": "SELECT id, amount FROM ec_payments WHERE order_id = 2 ORDER BY id",
+      "expected_verdict": "mismatch",
+      "dimension": "where_status"
+    },
+    {
+      "id": "having_missing_match",
+      "prompt": "从 ec_customers 中找出 id 小于 1000 且一张订单也没有的固定样本客户。订单来自 ec_orders，以 ec_orders.customer_id 关联客户 id，不限制订单状态。依次返回客户 id 和订单数，按客户 id 升序排列；只保留订单数等于 0 的客户。订单数应统计关联订单的 id，不能把 LEFT JOIN 产生的空行算作一张订单。",
+      "sql": "SELECT c.id, COUNT(o.id) AS n FROM ec_customers AS c LEFT JOIN ec_orders AS o ON o.customer_id = c.id WHERE c.id < 1000 GROUP BY c.id HAVING COUNT(o.id) = 0 ORDER BY c.id",
+      "expected_verdict": "match",
+      "dimension": "having_missing"
+    },
+    {
+      "id": "having_missing_mismatch",
+      "prompt": "从 ec_customers 中找出 id 小于 1000 且一张订单也没有的固定样本客户。订单来自 ec_orders，以 ec_orders.customer_id 关联客户 id，不限制订单状态。依次返回客户 id 和订单数，按客户 id 升序排列；只保留订单数等于 0 的客户。订单数应统计关联订单的 id，不能把 LEFT JOIN 产生的空行算作一张订单。",
+      "sql": "SELECT c.id, COUNT(o.id) AS n FROM ec_customers AS c LEFT JOIN ec_orders AS o ON o.customer_id = c.id WHERE c.id < 1000 GROUP BY c.id ORDER BY c.id",
+      "expected_verdict": "mismatch",
+      "dimension": "having_missing"
+    },
+    {
+      "id": "having_boundary_match",
+      "prompt": "对 ec_orders 中 id 小于 1000 的固定样本订单，按 customer_id 汇总已支付订单的原始总金额 total_amount。已支付口径包含 paid、refunded、partially_refunded 三种状态，退款不从原始总金额中扣除，其余状态不计入。只返回合计金额严格大于 50 的客户，依次返回 customer_id、合计金额，按 customer_id 升序排列。",
+      "sql": "SELECT customer_id, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 AND status IN ('paid', 'refunded', 'partially_refunded') GROUP BY customer_id HAVING SUM(total_amount) > 50 ORDER BY customer_id",
+      "expected_verdict": "match",
+      "dimension": "having_boundary"
+    },
+    {
+      "id": "having_boundary_mismatch",
+      "prompt": "对 ec_orders 中 id 小于 1000 的固定样本订单，按 customer_id 汇总已支付订单的原始总金额 total_amount。已支付口径包含 paid、refunded、partially_refunded 三种状态，退款不从原始总金额中扣除，其余状态不计入。只返回合计金额严格大于 50 的客户，依次返回 customer_id、合计金额，按 customer_id 升序排列。",
+      "sql": "SELECT customer_id, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 AND status IN ('paid', 'refunded', 'partially_refunded') GROUP BY customer_id HAVING SUM(total_amount) >= 50 ORDER BY customer_id",
+      "expected_verdict": "mismatch",
+      "dimension": "having_boundary"
+    },
+    {
+      "id": "time_field_match",
+      "prompt": "统计 ec_orders 中 id 小于 1000、支付时间 paid_at 落在 2026 年 2 月的固定样本订单。按本合成数据的 UTC 业务口径，时间范围为 2026-02-01 00:00:00（包含）到 2026-03-01 00:00:00（不包含）；使用支付时间而非创建时间 created_at。仅计入 paid、refunded、partially_refunded 三种已支付状态。依次返回订单数、订单 total_amount 合计，退款不扣减原始订单金额。",
+      "sql": "SELECT COUNT(*) AS n, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 AND status IN ('paid', 'refunded', 'partially_refunded') AND paid_at >= '2026-02-01' AND paid_at < '2026-03-01'",
+      "expected_verdict": "match",
+      "dimension": "time_field"
+    },
+    {
+      "id": "time_field_mismatch",
+      "prompt": "统计 ec_orders 中 id 小于 1000、支付时间 paid_at 落在 2026 年 2 月的固定样本订单。按本合成数据的 UTC 业务口径，时间范围为 2026-02-01 00:00:00（包含）到 2026-03-01 00:00:00（不包含）；使用支付时间而非创建时间 created_at。仅计入 paid、refunded、partially_refunded 三种已支付状态。依次返回订单数、订单 total_amount 合计，退款不扣减原始订单金额。",
+      "sql": "SELECT COUNT(*) AS n, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 AND status IN ('paid', 'refunded', 'partially_refunded') AND created_at >= '2026-02-01' AND created_at < '2026-03-01'",
+      "expected_verdict": "mismatch",
+      "dimension": "time_field"
+    },
+    {
+      "id": "time_boundary_match",
+      "prompt": "统计 ec_orders 中 customer_id 为 1000、created_at 从 2026-02-15 12:05:00（包含）到 2026-02-15 12:06:00（不包含）的订单，不限制订单状态。时间按本合成数据的 UTC 业务口径解释。依次返回订单数和 total_amount 合计。",
+      "sql": "SELECT COUNT(*) AS n, SUM(total_amount) AS gross FROM ec_orders WHERE customer_id = 1000 AND created_at >= '2026-02-15 12:05:00' AND created_at < '2026-02-15 12:06:00'",
+      "expected_verdict": "match",
+      "dimension": "time_boundary"
+    },
+    {
+      "id": "time_boundary_mismatch",
+      "prompt": "统计 ec_orders 中 customer_id 为 1000、created_at 从 2026-02-15 12:05:00（包含）到 2026-02-15 12:06:00（不包含）的订单，不限制订单状态。时间按本合成数据的 UTC 业务口径解释。依次返回订单数和 total_amount 合计。",
+      "sql": "SELECT COUNT(*) AS n, SUM(total_amount) AS gross FROM ec_orders WHERE customer_id = 1000 AND created_at >= '2026-02-15 12:05:00' AND created_at <= '2026-02-15 12:06:00'",
+      "expected_verdict": "mismatch",
+      "dimension": "time_boundary"
+    },
+    {
+      "id": "projection_missing_match",
+      "prompt": "查询 ec_orders 中 id 为 1 或 6 的订单，按顺序完整返回三列：订单 id、创建时间 created_at、支付时间 paid_at。按订单 id 升序排列，不添加状态筛选。",
+      "sql": "SELECT id, created_at, paid_at FROM ec_orders WHERE id IN (1, 6) ORDER BY id",
+      "expected_verdict": "match",
+      "dimension": "projection_missing"
+    },
+    {
+      "id": "projection_missing_mismatch",
+      "prompt": "查询 ec_orders 中 id 为 1 或 6 的订单，按顺序完整返回三列：订单 id、创建时间 created_at、支付时间 paid_at。按订单 id 升序排列，不添加状态筛选。",
+      "sql": "SELECT id, created_at FROM ec_orders WHERE id IN (1, 6) ORDER BY id",
+      "expected_verdict": "mismatch",
+      "dimension": "projection_missing"
+    },
+    {
+      "id": "projection_source_match",
+      "prompt": "查询 ec_refunds 中 order_id 为 2 的成功退款，并以退款的 payment_id 关联 ec_payments.id，且关联支付也必须成功。退款和支付的成功状态值都为 succeeded。依次返回退款 id、关联支付 id、该笔退款金额 ec_refunds.amount，按退款 id 升序排列。第三列是退款金额，不是支付交易的 amount；每笔退款分别一行。",
+      "sql": "SELECT r.id, p.id, r.amount FROM ec_refunds AS r INNER JOIN ec_payments AS p ON r.payment_id = p.id WHERE r.order_id = 2 AND r.status = 'succeeded' AND p.status = 'succeeded' ORDER BY r.id",
+      "expected_verdict": "match",
+      "dimension": "projection_source"
+    },
+    {
+      "id": "projection_source_mismatch",
+      "prompt": "查询 ec_refunds 中 order_id 为 2 的成功退款，并以退款的 payment_id 关联 ec_payments.id，且关联支付也必须成功。退款和支付的成功状态值都为 succeeded。依次返回退款 id、关联支付 id、该笔退款金额 ec_refunds.amount，按退款 id 升序排列。第三列是退款金额，不是支付交易的 amount；每笔退款分别一行。",
+      "sql": "SELECT r.id, p.id, p.amount FROM ec_refunds AS r INNER JOIN ec_payments AS p ON r.payment_id = p.id WHERE r.order_id = 2 AND r.status = 'succeeded' AND p.status = 'succeeded' ORDER BY r.id",
+      "expected_verdict": "mismatch",
+      "dimension": "projection_source"
+    },
+    {
+      "id": "order_missing_match",
+      "prompt": "查询 ec_orders 中 id 小于 1000 的全部固定样本订单，不限制状态。依次返回 id、total_amount，必须先按 total_amount 降序排列，金额相同时按 id 升序排列，不设置 LIMIT。",
+      "sql": "SELECT id, total_amount FROM ec_orders WHERE id < 1000 ORDER BY total_amount DESC, id ASC",
+      "expected_verdict": "match",
+      "dimension": "order_missing"
+    },
+    {
+      "id": "order_missing_mismatch",
+      "prompt": "查询 ec_orders 中 id 小于 1000 的全部固定样本订单，不限制状态。依次返回 id、total_amount，必须先按 total_amount 降序排列，金额相同时按 id 升序排列，不设置 LIMIT。",
+      "sql": "SELECT id, total_amount FROM ec_orders WHERE id < 1000",
+      "expected_verdict": "mismatch",
+      "dimension": "order_missing"
+    },
+    {
+      "id": "order_direction_match",
+      "prompt": "查询 ec_payments 中 order_id 为 2 且 status 为 succeeded 的成功支付。依次返回 id、amount，必须按 amount 升序排列，金额相同时按 id 升序排列。",
+      "sql": "SELECT id, amount FROM ec_payments WHERE order_id = 2 AND status = 'succeeded' ORDER BY amount ASC, id ASC",
+      "expected_verdict": "match",
+      "dimension": "order_direction"
+    },
+    {
+      "id": "order_direction_mismatch",
+      "prompt": "查询 ec_payments 中 order_id 为 2 且 status 为 succeeded 的成功支付。依次返回 id、amount，必须按 amount 升序排列，金额相同时按 id 升序排列。",
+      "sql": "SELECT id, amount FROM ec_payments WHERE order_id = 2 AND status = 'succeeded' ORDER BY amount DESC, id ASC",
+      "expected_verdict": "mismatch",
+      "dimension": "order_direction"
+    },
+    {
+      "id": "no_where_match",
+      "prompt": "查询 ec_products 中所有商品，依次返回 id 和 unit_price。不要求任何筛选、排序或分组，SQL 不设置 LIMIT；运行时若结果超过预算，应由独立的受控查询机制如实标记截断。",
+      "sql": "SELECT id, unit_price FROM ec_products",
+      "expected_verdict": "match",
+      "dimension": "no_where"
+    },
+    {
+      "id": "no_having_match",
+      "prompt": "统计 ec_orders 中 id 小于 1000 的固定样本订单，按 status 分组，依次返回 status 和订单数。保留全部状态组，不设置订单数阈值或其他分组过滤，按 status 升序排列。",
+      "sql": "SELECT status, COUNT(*) AS n FROM ec_orders WHERE id < 1000 GROUP BY status ORDER BY status",
+      "expected_verdict": "match",
+      "dimension": "no_having"
+    },
+    {
+      "id": "explicit_sql_match",
+      "prompt": "请通过 execute_query 尝试执行下面这条给定的只读 SQL，取得实际返回结果或规则拒绝的证据，并如实报告执行状态。任务由这条 SQL 定义，不需要额外推断业务指标；仍须遵守现有权限、预检与执行预算。SQL：SELECT id, total_amount FROM ec_orders WHERE id < 1000 AND customer_id = 1 ORDER BY id",
+      "sql": "SELECT id, total_amount FROM ec_orders WHERE id < 1000 AND customer_id = 1 ORDER BY id",
+      "expected_verdict": "match",
+      "dimension": "explicit_sql"
+    },
+    {
+      "id": "explicit_sql_mismatch",
+      "prompt": "请通过 execute_query 尝试执行下面这条给定的只读 SQL，取得实际返回结果或规则拒绝的证据，并如实报告执行状态。任务由这条 SQL 定义，不需要额外推断业务指标；仍须遵守现有权限、预检与执行预算。SQL：SELECT id, total_amount FROM ec_orders WHERE id < 1000 AND customer_id = 1 ORDER BY id",
+      "sql": "SELECT id, total_amount FROM ec_orders WHERE id < 1000 AND customer_id = 2 ORDER BY id",
+      "expected_verdict": "mismatch",
+      "dimension": "explicit_sql"
+    },
+    {
+      "id": "original_no_orders_match",
+      "prompt": "请实际查询一次：ec_customers 固定客户（客户 id<1000）中哪些没有订单？用 LEFT JOIN ec_orders，按客户 id 分组，以订单 id 计数，返回客户 id、订单数两列并按客户 id 升序。保留零订单客户。",
+      "sql": "SELECT c.id, COUNT(o.id) AS order_count FROM ec_customers AS c LEFT JOIN ec_orders AS o ON c.id = o.customer_id WHERE c.id < 1000 GROUP BY c.id HAVING COUNT(o.id) = 0 ORDER BY c.id",
+      "expected_verdict": "match",
+      "dimension": "original_no_orders"
+    },
+    {
+      "id": "original_no_orders_mismatch",
+      "prompt": "请实际查询一次：ec_customers 固定客户（客户 id<1000）中哪些没有订单？用 LEFT JOIN ec_orders，按客户 id 分组，以订单 id 计数，返回客户 id、订单数两列并按客户 id 升序。保留零订单客户。",
+      "sql": "SELECT c.id AS customer_id, COUNT(o.id) AS order_count FROM ec_customers c LEFT JOIN ec_orders o ON o.customer_id = c.id WHERE c.id < 1000 GROUP BY c.id ORDER BY c.id ASC",
+      "expected_verdict": "mismatch",
+      "dimension": "original_no_orders"
+    }
+  ]
+}

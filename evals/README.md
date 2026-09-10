@@ -1,10 +1,10 @@
 # 电商业务评测
 
-**当前使用 [v2 套件](V2.md)。v1 的 16 题已全部用于开发或失败诊断，后续重跑均为 `exposed_regression`。原始 [v1 案例文件](ecommerce-v1.json) 和失败报告保持原样，旧 `holdout` 名称不再表示未暴露验收。**
+**当前使用 [v5 套件](V5.md)。v1 至 v5 的 48 道不同题目已全部用于开发或失败诊断，后续重跑均为 `exposed_regression`。原始案例文件和首次验收报告保持原样，`holdout` 名称不再表示未暴露验收。**
 
-使用 `--suite v2` 选择 v2：16 道回归题属于 dev，新增 8 道题属于 holdout；业务数据仍是 `ecommerce-v1`。省略 `--suite` 保持 v1 兼容。报告分别记录 suite、suite_version、dataset_version 和 split_role。
+使用 `--suite v5` 选择 v5：40 道旧题属于 dev，8 道最初独立构造的题属于 holdout；因后者用于定位计划兼容缺口，当前两个 split 均是回归集。业务数据仍是 `ecommerce-v1`。省略 `--suite` 保持 v1 兼容。报告分别记录 suite、suite_version、dataset_version 和 split_role。
 
-以下介绍 v1 的原始组织方式与两版本共用的执行规则。
+以下介绍 v1 的原始组织方式与各版本共用的执行规则；当前完整命令见 [v5](V5.md)。
 
 本目录是公开合成数据的固定任务集，不含企业数据。16 题分为开发集 8 题和冻结验收集 8 题；两种运行模式使用同一任务口径，但证据不同。
 
@@ -15,7 +15,7 @@ uv run python scripts/evaluate_ecommerce.py --mode sql --split holdout --repeat 
 uv run python scripts/evaluate_ecommerce.py --mode agent --split holdout --repeat 3
 ```
 
-除默认 v1 的 `--suite` 外，其余参数必须显式指定。`sql` 模式把公开候选 SQL 交给真实 `QueryService`，不调用模型；`agent` 模式向真实 Agent 提供题目 prompt；v2 另附公开业务字典，不注入参考答案或另附参考 SQL。一般业务题由模型生成 SQL；拒绝和大扫描题的原始 SQL 本身就是题目输入。评测通过现有工具和可观测接口取得真实调用报告，不能用候选 SQL 代替模型调用。Agent 模式会消耗配置提供方的额度，只有明确选择此模式才调用。每题是独立会话，案例要求一次业务查询；元数据查询不算业务查询。
+除默认 v1 的 `--suite` 外，其余参数必须显式指定。`sql` 模式把公开候选 SQL 交给真实 `QueryService`，不调用模型；`agent` 模式向真实 Agent 提供题目 prompt；v2 及后续套件另附公开业务字典，不注入参考答案或另附参考 SQL。一般业务题由模型生成 SQL；拒绝和大扫描题的原始 SQL 本身就是题目输入。评测通过现有工具和可观测接口取得真实调用报告，不能用候选 SQL 代替模型调用。Agent 模式会消耗配置提供方的额度，只有明确选择此模式才调用。每题是独立会话，案例要求一次业务查询；元数据查询不算业务查询。
 
 运行目标固定为 `127.0.0.1:13306/db_agent` 的 `db_agent_reader`，表范围只能缩小到配置已授权表与六张 `ec_*` 表的交集。缺授权会停止，不会自动改 `.env` 或数据库权限。评测不创建、修改或清理数据。写入和跨库题只把输入提交到产品预检入口，预期在业务 SQL 派发前拒绝。
 
@@ -45,3 +45,9 @@ uv run python scripts/evaluate_ecommerce.py --mode agent --split holdout --repea
 错误分类分别为数据错误、解释错误、错误放行、预算、环境；一题可能同时属于多个分类。业务结果与最终回答分别判定：回答检查确认它与可信查询报告的程序渲染一致，不能把此项包装成开放式语言理解、解释语义或任意 SQL 等价性验证。渲染器本身的日期、NULL、截断和注入边界由其独立单测验证。
 
 只报告确实运行的模式、split、分母与重复次数。单次 SQL 通过不证明真实模型通过，开发集通过不证明冻结集通过，一次 smoke 不证明稳定正确率；本地合成百万行也不是 TB 级压测或生产安全保证。
+
+## 语义链路诊断
+
+`uv run python scripts/evaluate_semantics.py --repeat 2` 单独测试最终审查组件，使用 [26 道开发正反例](semantic-regression.json)，不执行查询。其检出与修正建议复核分母单独统计；该诊断没有经过完整 QueryIntent 链路，不能作为最终业务通过率。生产运行时不执行审查的修正建议。两种路径的区别和历史错误候选重放范围见 [需求核对](../docs/semantic-review.md)。
+
+完整 Agent 评测还保存已取得的需求合同、候选选择与最终复核证据。调用次数或时间预算耗尽时仍记录先前可信结果及未派发状态，并将尝试判为失败；不能因最后一步超时就把此前查询记成从未发生。

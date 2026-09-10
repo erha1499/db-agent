@@ -5,25 +5,41 @@ import hashlib
 import json
 import time
 from contextlib import AsyncExitStack
+from copy import deepcopy
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, hook_config
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
 from langsmith import tracing_context
-from openai import DefaultAsyncHttpxClient, DefaultHttpxClient
+from openai import APITimeoutError, DefaultAsyncHttpxClient, DefaultHttpxClient
+from pydantic import ValidationError
 
 from db_agent.analysis import SqlAnalysisService
 from db_agent.config import AnalysisSettings, QuerySettings, Settings
 from db_agent.db import DatabaseError, MetadataConnector
+from db_agent.intents import (
+    IntentError,
+    QueryIntent,
+    compile_intent,
+    intent_messages,
+    parse_intent,
+    select_candidate,
+)
 from db_agent.presentation import AgentRunResult, QueryExecution, render_queries
 from db_agent.query import QueryService
 from db_agent.records import RunRecord
-from db_agent.tools import analysis_tool, metadata_tools, query_tool
+from db_agent.semantics import (
+    SemanticReview,
+    SemanticReviewError,
+    parse_review,
+    review_messages,
+)
+from db_agent.tools import AnalyzeSqlArguments, analysis_tool, metadata_tools, query_tool
 
 SYSTEM_PROMPT = """你是面向研发人员的数据库查询与诊断助手，默认使用中文回答。
 工具支持授权表结构、analyze_sql 静态预检和普通 EXPLAIN、execute_query 受控只读查询；不支持变更。
@@ -36,8 +52,13 @@ CTE、子查询等未支持语法返回 UNKNOWN 时说明限制，不把简化�
 候选改写需再次调用 analyze_sql；比较计划不能证明业务结果等价或实际加速。缺少业务语义时说明假设。
 引用具体表名和索引名，区分工具事实与建议。不把字段名猜测的关系说成已验证的外键。
 用户要求查实际数据时使用 execute_query；仅要求解释、诊断或编写 SQL 时使用元数据和 analyze_sql。
+用户给出完整 SQL 并要求尝试执行时，原样交给 execute_query 取得服务端报告，
+包括可能被拒绝的语句；不代替工具宣告预检结果，不修改该 SQL 来绕过拒绝。
 查数任务默认简洁回答，仅给统计口径、实际数据和完整性，必要时列出实际 SQL。
 查询最终回答由提交的 SQL 和工具结果直接展示，末尾自由文字不会用于过滤、计算或合并结果。
+查询提交后本次运行结束；执行前系统会独立核对原始需求与 SQL，不能依赖执行后再补筛选。
+执行前还会独立提取需求合同并复核 SQL，这两次请求共用总模型预算。
+问题已经给出表名时直接成批获取相关结构，避免不必要的列表查询和重复模型轮次。
 用户要求的筛选、分组、排序和返回列必须完整体现在 SQL 中，不能留给末尾文字加工。
 用户只需一次查数时使用一条满足需求的 SQL；成功取得所需结果后结束，
 不为已明确的业务关联额外分表查数验证，也不依赖末尾文字拼接分表结果。
@@ -61,21 +82,214 @@ duration_ms 包含预检与读取开销，不是数据库纯执行耗时；计�
 class AgentResponseError(RuntimeError):
     """模型没有返回完整的文本回答。"""
 
+    def __init__(
+        self, message: str, *, code: str | None = None,
+        observation: AgentRunResult | None = None,
+    ):
+        super().__init__(message)
+        self.code = code
+        # Trusted service evidence stays separate from the public exception text.
+        self.observation = observation
+
 
 class RuntimeMiddleware(AgentMiddleware):
     """Serialize tools, sanitize failures and record events without their payloads."""
 
-    def __init__(self, record: RunRecord | None, tool_names: set[str]):
+    def __init__(
+        self, record: RunRecord | None, tool_names: set[str], *, settings: Settings,
+        model, prompt: str, connector: MetadataConnector | None,
+        analysis_limits: AnalysisSettings, executions: list[QueryExecution],
+    ):
         self.record = record
         self.tool_names = frozenset(tool_names)
         self.tool_lock = asyncio.Lock()
         self.model_calls = 0
         self.tool_calls: list[str] = []
+        self.model_limit = settings.max_model_calls if connector else 1
+        self.tool_limit = settings.max_tool_calls
+        self.prompt = prompt
+        self.connector = connector
+        self.analysis_limits = analysis_limits
+        self.executions = executions
+        self.schemas: dict[str, dict] = {}
+        self.semantic_reviews: list[dict] = []
+        self.query_intents: list[dict] = []
+        self.reviewer = model.with_structured_output(
+            SemanticReview, method="function_calling", include_raw=True, tool_choice="auto",
+        ) if connector else None
+        self.interpreter = model.with_structured_output(
+            QueryIntent, method="function_calling", include_raw=True, tool_choice="auto",
+        ) if connector else None
+
+    def _claim_model_call(self) -> int:
+        # The framework counts its own model nodes; this counter also includes
+        # isolated semantic reviews before any HTTP request is dispatched.
+        if self.model_calls >= self.model_limit:
+            raise AgentResponseError(
+                "模型或工具调用次数达到预算，已停止运行。", code="MODEL_CALL_LIMIT",
+            )
+        self.model_calls += 1
+        return self.model_calls
+
+    def _claim_tool_call(self, name: str) -> None:
+        if len(self.tool_calls) >= self.tool_limit:
+            raise AgentResponseError(
+                "模型或工具调用次数达到预算，已停止运行。", code="TOOL_CALL_LIMIT",
+            )
+        self.tool_calls.append(name)
+
+    def observation(self) -> AgentRunResult:
+        queries = deepcopy(self.executions)
+        return AgentRunResult(
+            render_queries(
+                queries, missing_reports=self.tool_calls.count("execute_query") - len(queries),
+            ),
+            queries, self.model_calls, self.tool_calls.copy(), deepcopy(self.semantic_reviews),
+            deepcopy(self.query_intents),
+        )
+
+    @hook_config(can_jump_to=["end"])
+    async def abefore_model(self, state, runtime):
+        # Query answers are rendered from service reports. End through the
+        # framework before spending another model call on unused free text.
+        if "execute_query" in self.tool_calls:
+            return {"jump_to": "end"}
+        return None
+
+    async def _query_schemas(self, tables: tuple[str, ...]) -> list[dict]:
+        for table in dict.fromkeys(tables):
+            if table not in self.schemas:
+                self._claim_tool_call("describe_table")
+                started = time.monotonic()
+                status = "error"
+                try:
+                    self.schemas[table] = await self.connector.describe_table(table)
+                    status = "ok"
+                finally:
+                    if self.record:
+                        self.record.emit(
+                            "tool_finished", operation="describe_table", status=status,
+                            duration_ms=round((time.monotonic() - started) * 1000),
+                        )
+        return [self.schemas[table] for table in dict.fromkeys(tables)]
+
+    async def review_sql(self, sql: str, schemas: list[dict]) -> SemanticReview:
+        call_id = self._claim_model_call()
+        started = time.monotonic()
+        status, code = "error", "SEMANTIC_REVIEW_FAILED"
+        try:
+            response = await self.reviewer.ainvoke(review_messages(self.prompt, sql, schemas))
+            review = parse_review(response)
+            self.semantic_reviews.append({"sql": sql, **review.model_dump()})
+            status, code = "ok", review.verdict.upper()
+            return review
+        except APITimeoutError:
+            code = "TIMEOUT"
+            raise AgentResponseError(
+                "模型请求超过时间预算，已停止等待。", code=code,
+            ) from None
+        except SemanticReviewError:
+            raise DatabaseError(
+                "SEMANTIC_REVIEW_INVALID", "需求核对未返回完整有效结论，业务 SQL 未执行。",
+            ) from None
+        except AgentResponseError:
+            raise
+        except Exception:
+            raise DatabaseError(
+                "SEMANTIC_REVIEW_FAILED", "需求核对失败，业务 SQL 未执行。",
+            ) from None
+        finally:
+            if self.record:
+                self.record.emit(
+                    "model_finished", operation="semantic_review", status=status, code=code,
+                    call_id=str(call_id), duration_ms=round((time.monotonic() - started) * 1000),
+                )
+
+    async def resolve_intent(self, schemas: list[dict]) -> QueryIntent:
+        call_id = self._claim_model_call()
+        started = time.monotonic()
+        status, code = "error", "QUERY_INTENT_FAILED"
+        try:
+            # No candidate SQL or previous reasoning is passed to the interpreter.
+            response = await self.interpreter.ainvoke(intent_messages(self.prompt, schemas))
+            intent = parse_intent(response)
+            self.query_intents.append({
+                "contract": intent.model_dump(),
+                # Bind the actual input in code; a model's copied quotation is
+                # neither reliable provenance nor proof of semantic correctness.
+                "request_sha256": hashlib.sha256(self.prompt.encode()).hexdigest(),
+            })
+            status, code = "ok", "UNCERTAIN" if intent.uncertainties else "READY"
+            return intent
+        except APITimeoutError:
+            code = "TIMEOUT"
+            raise AgentResponseError(
+                "模型请求超过时间预算，已停止等待。", code=code,
+            ) from None
+        except IntentError:
+            raise DatabaseError(
+                "QUERY_INTENT_INVALID", "未取得完整有效的需求合同，业务 SQL 未执行。",
+            ) from None
+        except Exception:
+            raise DatabaseError(
+                "QUERY_INTENT_FAILED", "独立需求提取失败，业务 SQL 未执行。",
+            ) from None
+        finally:
+            if self.record:
+                self.record.emit(
+                    "model_finished", operation="query_intent", status=status, code=code,
+                    call_id=str(call_id), duration_ms=round((time.monotonic() - started) * 1000),
+                )
+
+    async def _prepare_query(self, request):
+        # Validate the original arguments before replacing a candidate. Never
+        # discard an untrusted approved/target field to turn it into valid input.
+        try:
+            sql = AnalyzeSqlArguments.model_validate(request.tool_call["args"]).sql
+        except ValidationError:
+            raise DatabaseError("INVALID_ARGUMENT", "查询工具参数无效，业务 SQL 未执行。") from None
+        checked = self.connector.check_sql(sql, self.analysis_limits)
+        if checked.decision != "ALLOW":
+            # Preserve the existing deterministic rejection report, without
+            # asking a model to interpret or repair a forbidden operation.
+            return request
+        await self._query_schemas(checked.tables)
+        # Include all structures actually retrieved in this run, so a candidate
+        # omitting a previously inspected table cannot hide it from the contract.
+        schemas = list(self.schemas.values())
+        intent = await self.resolve_intent(schemas)
+        if intent.uncertainties or intent.query is None:
+            raise DatabaseError(
+                "SEMANTIC_UNCERTAIN", "需求存在未解决的口径或结构问题，业务 SQL 未执行。",
+            )
+        try:
+            contract_sql = compile_intent(intent, self.prompt, schemas)
+            selected_sql, selection = select_candidate(sql, contract_sql, schemas)
+        except IntentError:
+            raise DatabaseError(
+                "QUERY_INTENT_INVALID", "需求合同不能完整转换为受支持的 SQL，业务 SQL 未执行。",
+            ) from None
+        checked = self.connector.check_sql(selected_sql, self.analysis_limits)
+        self.query_intents[-1].update(
+            candidate_sql=sql, contract_sql=contract_sql,
+            selected_sql=selected_sql, selection=selection,
+        )
+        if checked.decision != "ALLOW":
+            raise DatabaseError(
+                "QUERY_INTENT_INVALID", "需求合同未通过当前静态与权限检查，业务 SQL 未执行。",
+            )
+        review = await self.review_sql(selected_sql, await self._query_schemas(checked.tables))
+        if review.verdict != "match":
+            raise DatabaseError(
+                "SEMANTIC_MISMATCH" if review.verdict == "mismatch" else "SEMANTIC_UNCERTAIN",
+                "需求合同生成的 SQL 尚未通过复核，业务 SQL 未执行。",
+            )
+        return request.override(tool_call={**request.tool_call, "args": {"sql": selected_sql}})
 
     async def awrap_model_call(self, request, handler):
-        self.model_calls += 1
+        call_id = self._claim_model_call()
         started = time.monotonic()
-        status = "error"
+        status, code = "error", None
         try:
             response = await handler(request)
             for message in response.result:
@@ -88,12 +302,18 @@ class RuntimeMiddleware(AgentMiddleware):
                         raise AgentResponseError("模型返回了无效的工具调用，已停止运行")
             status = "ok"
             return response
+        except APITimeoutError:
+            code = "TIMEOUT"
+            raise AgentResponseError(
+                "模型请求超过时间预算，已停止等待。", code=code,
+            ) from None
         finally:
             if self.record:
                 self.record.emit(
                     "model_finished",
                     status=status,
-                    call_id=str(self.model_calls),
+                    code=code,
+                    call_id=str(call_id),
                     duration_ms=round((time.monotonic() - started) * 1000),
                 )
 
@@ -102,18 +322,49 @@ class RuntimeMiddleware(AgentMiddleware):
             started = time.monotonic()
             name = request.tool_call["name"]
             known = name in self.tool_names
-            self.tool_calls.append(name if known else "unknown")
+            self._claim_tool_call(name if known else "unknown")
             # The provider supplies call IDs: retain only a digest in local records.
             call_id = hashlib.sha256(str(request.tool_call["id"]).encode()).hexdigest()[:16]
             status, code = "error", "CANCELLED"
             try:
                 if not known:
                     raise DatabaseError("UNKNOWN_TOOL", "当前工具不可用。")
+                if name == "execute_query":
+                    try:
+                        request = await self._prepare_query(request)
+                    except (DatabaseError, AgentResponseError, asyncio.CancelledError) as exc:
+                        sql = request.tool_call.get("args", {}).get("sql")
+                        if isinstance(sql, str):
+                            # This failure happened before handler invocation, so
+                            # an exhausted review budget cannot mean SQL was sent.
+                            self.executions.append(QueryExecution(sql, {
+                                "status": "error", "decision": "UNKNOWN",
+                                "execution_status": "not_started", "result": None,
+                                "stage": "semantic_review",
+                                "error": {
+                                    "code": "CANCELLED" if isinstance(exc, asyncio.CancelledError)
+                                    else exc.code,
+                                    "message": exc.message if isinstance(exc, DatabaseError)
+                                    else "需求核对已停止，业务 SQL 未执行。"
+                                    if isinstance(exc, asyncio.CancelledError) else str(exc),
+                                },
+                            }))
+                        raise
                 result = await handler(request)
                 status = getattr(result, "status", "success")
                 status = "ok" if status == "success" else "error"
                 code = None if status == "ok" else "INVALID_ARGUMENT"
+                if name == "describe_table" and status == "ok":
+                    data = json.loads(result.content)
+                    if (
+                        isinstance(data, dict)
+                        and data.get("table") == request.tool_call["args"]["table"]
+                    ):
+                        self.schemas[data["table"]] = data
                 return result
+            except AgentResponseError as exc:
+                code = exc.code or "AGENT_RESPONSE_ERROR"
+                raise
             except Exception as exc:
                 code = exc.code if isinstance(exc, DatabaseError) else "TOOL_ERROR"
                 message = (
@@ -167,6 +418,7 @@ async def run_agent_observed(
     if not prompt.strip():
         raise ValueError("问题不能为空")
     executions: list[QueryExecution] = []
+    runtime = None
 
     # 显式映射项目配置，不读取全局 OPENAI_* 凭据，也不启用第三方追踪。
     async with AsyncExitStack() as clients:
@@ -190,8 +442,8 @@ async def run_agent_observed(
         try:
             async with asyncio.timeout(settings.run_timeout_seconds):
                 tools = []
+                analysis_limits = analysis_settings or AnalysisSettings()
                 if connector:
-                    analysis_limits = analysis_settings or AnalysisSettings()
                     service = SqlAnalysisService(
                         connector, analysis_limits, record
                     )
@@ -202,7 +454,11 @@ async def run_agent_observed(
                         *metadata_tools(connector), analysis_tool(service),
                         query_tool(query_service, executions.append),
                     ]
-                runtime = RuntimeMiddleware(record, {tool.name for tool in tools})
+                runtime = RuntimeMiddleware(
+                    record, {tool.name for tool in tools}, settings=settings, model=model,
+                    prompt=prompt, connector=connector, analysis_limits=analysis_limits,
+                    executions=executions,
+                )
                 agent = create_agent(
                     model=model,
                     tools=tools,
@@ -223,24 +479,44 @@ async def run_agent_observed(
                 result = await agent.ainvoke(
                     {"messages": [{"role": "user", "content": prompt}]},
                     config={
-                        # A tool round also runs three before/after-model budget nodes.
-                        "recursion_limit": 5 * settings.max_model_calls + 4,
+                        # Includes the framework-native query completion hook.
+                        "recursion_limit": 6 * settings.max_model_calls + 5,
                         "max_concurrency": 1,
                     },
                 )
-        except (ModelCallLimitExceededError, ToolCallLimitExceededError, GraphRecursionError):
-            raise AgentResponseError("模型或工具调用次数达到预算，已停止运行。") from None
+        except TimeoutError:
+            raise AgentResponseError(
+                "运行超过总时间预算，已停止等待；数据库连接会关闭。", code="TIMEOUT",
+                observation=runtime.observation() if runtime is not None else None,
+            ) from None
+        except (
+            ModelCallLimitExceededError, ToolCallLimitExceededError, GraphRecursionError,
+        ) as exc:
+            code = (
+                "MODEL_CALL_LIMIT" if isinstance(exc, ModelCallLimitExceededError)
+                else "TOOL_CALL_LIMIT" if isinstance(exc, ToolCallLimitExceededError)
+                else "GRAPH_RECURSION_LIMIT"
+            )
+            raise AgentResponseError(
+                "模型或工具调用次数达到预算，已停止运行。", code=code,
+                observation=runtime.observation() if runtime is not None else None,
+            ) from None
+        except AgentResponseError as exc:
+            if runtime is not None and exc.code in {
+                "MODEL_CALL_LIMIT", "TOOL_CALL_LIMIT", "GRAPH_RECURSION_LIMIT", "TIMEOUT",
+            }:
+                exc.observation = runtime.observation()
+            raise
 
+    query_calls = runtime.tool_calls.count("execute_query")
+    if query_calls:
+        return runtime.observation()
     message = result["messages"][-1]
     if not isinstance(message, AIMessage) or message.tool_calls:
         raise AgentResponseError("模型返回了当前未支持的消息或工具调用")
     if message.response_metadata.get("finish_reason") == "length":
         raise AgentResponseError("模型输出达到 token 上限，请缩小问题或调整输出预算")
-    query_calls = runtime.tool_calls.count("execute_query")
-    answer = (
-        render_queries(executions, missing_reports=query_calls - len(executions))
-        if query_calls else message.text.strip()
-    )
+    answer = message.text.strip()
     if not answer:
         raise AgentResponseError("模型未返回文本回答")
     return AgentRunResult(answer, executions, runtime.model_calls, runtime.tool_calls.copy())

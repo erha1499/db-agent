@@ -31,7 +31,10 @@ _ACCESS_TYPES = {
     "ALL",
 }
 _COST_FIELDS = {"query_cost", "read_cost", "eval_cost", "prefix_cost", "sort_cost"}
-_TABLE_FLAGS = {"using_index", "using_index_condition", "using_index_for_group_by"}
+_TABLE_FLAGS = {
+    "using_index", "using_index_condition", "using_index_for_group_by", "backward_index_scan",
+    "not_exists",
+}
 _IGNORED_STRINGS = {"attached_condition", "index_condition", "key_length"}
 _IGNORED_LISTS = {"possible_keys", "ref", "used_columns", "partitions"}
 _SPECIAL_MESSAGES = {

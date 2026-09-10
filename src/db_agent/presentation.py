@@ -18,6 +18,8 @@ class AgentRunResult:
     queries: list[QueryExecution] = field(repr=False)
     model_calls: int
     tool_calls: list[str]
+    semantic_reviews: list[dict] = field(default_factory=list, repr=False)
+    query_intents: list[dict] = field(default_factory=list, repr=False)
 
 
 def _visible_text(value: str, *, multiline: bool = False) -> str:

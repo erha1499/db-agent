@@ -8,6 +8,8 @@
 
 项目大步骤、完成状态和下一步优先级统一维护在 [TODO 清单](TODO.md)。开始新任务前先核对清单，再按本文查找运行方式与能力限制。
 
+已加入独立需求合同、完整 SQL 编译与最终复核，修复已知漏筛选问题，旧题真实 Agent 回归通过。第 11 步整体仍在验收：新题的退款汇总受真实计划风险限制，尚不能完成全部约定查询。各次结果与失败分别记录在 [电商验收记录](docs/ecommerce.md)，不能把模型 match 或安全拒绝当作业务查询成功。
+
 ## 快速开始
 
 使用 [uv](https://docs.astral.sh/uv/getting-started/installation/) 管理依赖；项目固定开发 Python 版本为 3.13，具体依赖版本记录在 `uv.lock`。
@@ -127,7 +129,7 @@ uv run db-agent chat '分析 SELECT id, customer_id FROM orders ORDER BY created
 
 直接 CLI 由业务代码完成检查与计划取证，返回 JSON；`chat` 由主模型选择工具，读取相同报告后解释问题与建议。`analyze_sql` 内部不调用 LLM；框架层只负责协议、工具白名单、顺序执行和预算，放行规则在领域代码和连接器中。
 
-含敏感字面值的 SQL 可以通过 `db analyze --stdin` 或 `db query --stdin` 输入，避免写入命令参数或 shell 历史；输入为受长度限制的 UTF-8。直接 `db` CLI 不调用模型。`chat` 会把问题、工具调用、脱敏计划摘要以及查询返回行发送给配置的模型；行值不自动脱敏，只能使用允许进入该模型上下文的数据。
+含敏感字面值的 SQL 可以通过 `db analyze --stdin` 或 `db query --stdin` 输入，避免写入命令参数或 shell 历史；输入为受长度限制的 UTF-8。直接 `db` CLI 不调用模型。`chat` 会把问题、SQL、元数据及脱敏计划摘要发送给配置模型，这些输入应适合该模型的使用范围；查询返回行由程序直接展示，查询工具轮后不再请求模型。
 
 当前支持单条完整 `SELECT`、单表和带 `ON` 的显式 `INNER` / `LEFT JOIN`、基础比较与算术、分组、排序、`LIMIT`，以及 `COUNT` / `SUM` / `AVG` / `MIN` / `MAX`。函数名必须紧接左括号，不能加反引号或数据库限定。CTE、子查询、UNION、窗口函数、DISTINCT、无表来源、未绑定占位符等返回 `UNKNOWN`；写操作、越界表、文件操作、锁定读取和非批准函数返回 `BLOCK`。实际注释与提示、未支持的标识符及语法明确拒绝；字符串中的标记按词法区分。使用 MySQL 方言 AST 和节点/参数白名单，不以解析成功当作安全证明，也不改写原 SQL 后冒充原计划。
 
@@ -271,7 +273,11 @@ flowchart TD
 
 ## 技术与模块
 
-当前通过 `langchain_openai.ChatOpenAI` 接入一个 OpenAI 兼容模型，由 `langchain.agents.create_agent` 调度元数据工具、`analyze_sql` 与 `execute_query`。LangChain 内部使用 LangGraph，本项目不自写工具循环或自定义 Graph。每次 Agent 运行创建并释放自有 HTTP 客户端，默认最多调用模型 4 次、工具 6 次，总时限 60 秒；工具顺序执行，模型请求禁用自动重试。
+当前通过 `langchain_openai.ChatOpenAI` 接入一个 OpenAI 兼容模型，由 `langchain.agents.create_agent` 调度元数据工具、`analyze_sql` 与 `execute_query`。LangChain 内部使用 LangGraph，本项目不自写工具循环或自定义 Graph。每次 Agent 运行创建并释放自有 HTTP 客户端，默认最多调用模型 4 次、工具 6 次，总时限 60 秒、每次输出 1024 token；工具顺序执行，模型请求禁用自动重试。
+
+`chat` 的查询执行前增加[需求核对](docs/semantic-review.md)：独立的 `QueryIntent` 提取只接收原始任务与本次实际取得的结构，不接收主候选 SQL。代码校验完整合同并编译 SQL，用保守 AST 对照决定保留主候选还是选择整份合同，再对选定 SQL 做一次独立最终复核。所有阶段共享原模型预算；仅复核 `match` 才进入原 `QueryService` 和连接器，重新完成权限、静态规则、EXPLAIN 与事务检查。没有完整合同、复核失败或预算不足时停止。
+
+原始请求指纹由程序绑定，只关联实际输入，不证明理解正确或授予权限；模型不复述原文作为执行前提。有限 AST 对照不构成一般 SQL 等价证明，上下文隔离仍使用同一个配置模型，不能宣称模型统计独立。正常路径会处理完同一工具轮内的全部工具调用，再结束模型调度；查询行按可信报告直接展示，不回传模型，也不再为最终回答请求 HTTP。直接 `db query` 继续只走确定性检查，不调用模型。
 
 | 模块 | 状态 | 职责 |
 | --- | --- | --- |
@@ -287,6 +293,8 @@ flowchart TD
 | `scripts/seed_local_mysql.py` | 已建立 | 管理员显式创建固定合成业务表与数据 |
 | `src/db_agent/ecommerce.py` / `scripts/seed_ecommerce.py` | 已建立 | 确定性电商数据、固定本地目标的分批 SQL 导入、清单与真实验收 |
 | `src/db_agent/presentation.py` | 已建立 | 根据可信查询报告展示 SQL、结果、空集、NULL、截断和失败 |
+| `src/db_agent/intents.py` | 已建立 | 无候选输入的完整需求合同、代码编译与保守 AST 选择；不授予执行权限 |
+| `src/db_agent/semantics.py` | 已建立 | 选定 SQL 的六维最终复核消息、协议及严格结果校验；不循环修正 |
 | 通用结果等价验证 | 计划 | 候选查询经相同执行边界，与独立基准和边界数据比较 |
 | `evals` / `src/db_agent/evaluation.py` | 已建立 | 独立 oracle、开发/冻结任务、SQL 与真实模型评测及分类报告 |
 

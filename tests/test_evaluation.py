@@ -84,7 +84,7 @@ def test_public_splits_are_disjoint_and_sql_respects_policy(limits):
         assert checked.decision == ("ALLOW" if expected == "REVIEW" else expected), case["id"]
 
 
-def test_v2_preserves_v1_and_separates_exposed_regression_from_new_acceptance(limits):
+def test_v2_preserves_v1_and_marks_both_previous_splits_as_exposed(limits):
     legacy_bytes = evaluation.CASE_FILE.read_bytes()
     assert evaluation._digest(legacy_bytes) == (
         "250cd649e8fe7dce2be92deeb6bc46176d4d213a01091e1f272263f741850f84"
@@ -98,7 +98,7 @@ def test_v2_preserves_v1_and_separates_exposed_regression_from_new_acceptance(li
         {key: value for key, value in item.items() if key != "business_context"} for item in dev
     ] == [dict(item, split="dev") for item in original]
     assert dev_manifest["split_role"] == "exposed_regression"
-    assert holdout_manifest["split_role"] == "held_out_acceptance"
+    assert holdout_manifest["split_role"] == "exposed_regression"
     assert holdout_manifest["suite_version"] == "ecommerce-eval-v2"
     assert holdout_manifest["dataset_version"] == "ecommerce-v1"
     assert holdout_manifest["required_dataset"]["seed"] == 20260910
@@ -119,8 +119,40 @@ def test_legacy_load_api_defaults_to_v1_and_marks_old_holdout_as_exposed():
     assert default["split_role"] == "exposed_regression"
 
 
-@pytest.mark.parametrize("suite", ["../ecommerce-v2", "v3", "ecommerce-v2.json"])
-def test_suite_selection_accepts_only_the_two_fixed_names(suite):
+@pytest.mark.parametrize(
+    "suite,previous,dev_count", [("v3", "v2", 24), ("v4", "v3", 32), ("v5", "v4", 40)],
+)
+def test_later_suites_preserve_exposed_cases_and_use_independent_new_tasks(
+    limits, suite, previous, dev_count,
+):
+    previous_bytes = evaluation.SUITE_FILES[previous].read_bytes()
+    previous_cases = json.loads(previous_bytes)["cases"]
+    dev_manifest, dev = evaluation.load_cases("dev", suite=suite)
+    holdout_manifest, holdout = evaluation.load_cases("holdout", suite=suite)
+    assert len(dev) == dev_count and len(holdout) == 8
+    assert [
+        {key: value for key, value in item.items() if key != "business_context"} for item in dev
+    ] == [dict(item, split="dev") for item in previous_cases]
+    assert {item["id"] for item in dev}.isdisjoint(item["id"] for item in holdout)
+    assert dev_manifest["split_role"] == "exposed_regression"
+    assert holdout_manifest["split_role"] == "exposed_regression"
+    assert dev_manifest["business_context_sha256"] == holdout_manifest["business_context_sha256"]
+    for item in holdout:
+        assert MetadataConnector(limits.database).check_sql(
+            item["sql"], limits.analysis,
+        ).decision == "ALLOW", item["id"]
+    if previous == "v3":
+        assert evaluation._digest(previous_bytes) == (
+            "b79c705826029a286a2698ac42ed8ecb39eddd921e4b102ed1b05acca3100d92"
+        )
+    if previous == "v4":
+        assert evaluation._digest(previous_bytes) == (
+            "71d0b7b92006299b6d7a16edc19af8c5c69ce2309de3489137013e506adf4baa"
+        )
+
+
+@pytest.mark.parametrize("suite", ["../ecommerce-v2", "v6", "ecommerce-v2.json"])
+def test_suite_selection_accepts_only_fixed_names(suite):
     with pytest.raises(evaluation.EvaluationError, match="suite"):
         evaluation.load_cases("dev", suite=suite)
 
@@ -160,7 +192,7 @@ def test_v2_report_records_suite_role_and_the_selected_attempt_denominator(limit
         analysis=limits.analysis, query=limits.query,
     ))
     assert report["suite"] == "v2" and report["suite_version"] == "ecommerce-eval-v2"
-    assert report["split_role"] == "held_out_acceptance"
+    assert report["split_role"] == "exposed_regression"
     assert report["task_count"] == 8 and report["attempt_count"] == 16
 
 
@@ -227,6 +259,10 @@ def test_rejected_task_with_dispatched_timeout_is_also_unsafe_execution():
     ("TIMEOUT", "budget"), ("RESPONSE_LIMIT", "budget"),
     ("CONNECTION_ERROR", "environment"), ("PERMISSION_DENIED", "environment"),
     ("SQL_REFERENCE_ERROR", "data_error"), ("UNSUPPORTED_RESULT_TYPE", "data_error"),
+    ("SEMANTIC_MISMATCH", "data_error"), ("SEMANTIC_UNCERTAIN", "data_error"),
+    ("SEMANTIC_REVIEW_INVALID", "environment"), ("SEMANTIC_REVIEW_FAILED", "environment"),
+    ("MODEL_CALL_LIMIT", "budget"), ("TOOL_CALL_LIMIT", "budget"),
+    ("GRAPH_RECURSION_LIMIT", "budget"),
 ])
 def test_safe_error_classification(case, code, category):
     actual = report_for(case)
@@ -340,6 +376,86 @@ def test_raw_exception_and_credentials_never_enter_evaluation_reports(
     assert all(word not in json.dumps(result) for word in (
         "private-provider-body", "synthetic-model-key", "synthetic-reader",
     ))
+
+
+@pytest.mark.parametrize("completed_first", [False, True])
+@pytest.mark.parametrize("code", [
+    "MODEL_CALL_LIMIT", "TOOL_CALL_LIMIT", "GRAPH_RECURSION_LIMIT", "TIMEOUT",
+])
+def test_budget_failure_preserves_trusted_partial_evidence_without_passing(
+    limits, case, monkeypatch, completed_first, code,
+):
+    from db_agent import agent
+
+    pending_sql = "SELECT id FROM ec_orders WHERE id = 7"
+    not_started = QueryExecution(pending_sql, {
+        "status": "error", "decision": "UNKNOWN", "execution_status": "not_started",
+        "result": None, "error": {"code": code},
+    })
+    queries = ([QueryExecution(case["sql"], report_for(case))] if completed_first else [])
+    queries.append(not_started)
+    reviews = [{"sql": case["sql"], "verdict": "match" if completed_first else "mismatch",
+                "checks": {"filters": "constructed-review-evidence"}}]
+    intents = [{"contract": {"query": None, "uncertainties": ["constructed-intent-evidence"]},
+                "request_sha256": "0" * 64,
+                "selected_sql": case["sql"], "selection": "AST_MATCH"}]
+    partial = AgentRunResult(
+        render_queries(queries), queries, 2,
+        ["execute_query", "describe_table"] + (["execute_query"] if completed_first else []),
+        reviews, intents,
+    )
+    error = agent.AgentResponseError(
+        "模型或工具调用次数达到预算，已停止运行。", code=code, observation=partial,
+    )
+
+    async def observed(*args):
+        raise error
+
+    monkeypatch.setattr(agent, "run_agent_observed", observed)
+    actual = run_case(case, limits, "agent")
+    assert not actual["passed"] and actual["categories"] == ["budget"]
+    assert actual["failure_code"] == code and actual["partial_observation"] is True
+    assert actual["model_calls"] == 2 and actual["tool_calls"] == partial.tool_calls
+    assert actual["semantic_reviews"] == reviews
+    assert actual["query_intents"] == intents
+    assert actual["missing_query_reports"] == 0
+    assert [item["sql"] for item in actual["queries"]] == [item.sql for item in queries]
+    assert actual["queries"][-1]["execution_status"] == "not_started"
+    assert actual["queries"][-1]["result"] is None
+    if completed_first:
+        assert actual["queries"][0]["execution_status"] == "completed"
+        assert actual["queries"][0]["result"]["rows"] == case["expected"]["rows"]
+    assert actual["answer_sha256"] is None and actual["explanation_scope"] == "not_observed"
+    for value in (pending_sql, case["sql"], "constructed-review-evidence",
+                  "constructed-intent-evidence"):
+        assert value not in str(error) + repr(error)
+
+
+@pytest.mark.parametrize("source", ["foreign_exception", "invalid_observation"])
+def test_arbitrary_exception_payload_cannot_become_trusted_observation(
+    limits, case, monkeypatch, source,
+):
+    from db_agent import agent
+
+    queries = [QueryExecution("SELECT private_exception_marker", report_for(case))]
+    if source == "foreign_exception":
+        error = RuntimeError("private-provider-body")
+        error.observation = AgentRunResult(render_queries(queries), queries, 1, ["execute_query"])
+    else:
+        error = agent.AgentResponseError(
+            "模型或工具调用次数达到预算，已停止运行。", code="MODEL_CALL_LIMIT",
+            observation=SimpleNamespace(queries=queries, model_calls=1),
+        )
+
+    async def observed(*args):
+        raise error
+
+    monkeypatch.setattr(agent, "run_agent_observed", observed)
+    actual = run_case(case, limits, "agent")
+    assert not actual["passed"] and actual["queries"] == []
+    assert actual["model_calls"] is None
+    assert "partial_observation" not in actual
+    assert "private_exception_marker" not in json.dumps(actual)
 
 
 @pytest.mark.parametrize(("kind", "code", "category"), [
