@@ -1,10 +1,14 @@
 """Typed metadata tools. Database targets and permissions are server-side settings."""
 
+from collections.abc import Callable
+from copy import deepcopy
+
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from db_agent.analysis import SqlAnalysisService
 from db_agent.db import MetadataConnector
+from db_agent.presentation import QueryExecution
 from db_agent.query import QueryService
 
 
@@ -30,21 +34,35 @@ def analysis_tool(service: SqlAnalysisService) -> StructuredTool:
             "对完整 MySQL SQL 做权限与静态预检，通过后获取普通 EXPLAIN JSON 并返回诊断证据。"
             "不执行业务 SQL；BLOCK/REVIEW/UNKNOWN 是业务结论，不能绕过。"
             "只接收 sql，不接收身份、数据库或授权参数。改写后需重新调用。"
+            "标识符/别名用英文 ASCII；聚合仅 COUNT/SUM/AVG/MIN/MAX，"
+            "不用 COALESCE/ROUND 等未支持函数，空 SUM 保留 NULL。"
         ),
         args_schema=AnalyzeSqlArguments,
         handle_validation_error="工具参数无效；只接受长度受限的完整 SQL 字符串 sql。",
     )
 
 
-def query_tool(service: QueryService) -> StructuredTool:
+def query_tool(
+    service: QueryService, on_execution: Callable[[QueryExecution], None] | None = None,
+) -> StructuredTool:
+    async def execute(sql: str) -> dict:
+        report = await service.execute(sql)
+        if on_execution is not None:
+            # Capture from the service before its response enters model context;
+            # never reconstruct evidence from a model message or tool-call args.
+            on_execution(QueryExecution(sql, deepcopy(report)))
+        return report
+
     return StructuredTool.from_function(
-        coroutine=service.execute,
+        coroutine=execute,
         name="execute_query",
         description=(
             "当用户要求查询实际数据时，执行一条完整 MySQL SELECT 并返回受限结果。"
             "内部重新进行权限、SQL 与 EXPLAIN 预检，只有 ALLOW 执行；不接受旧报告或授权参数。"
             "先检查 status/execution_status，只有 result 才是实际查询数据。"
             "rows 按 columns 位置对应；truncated=true 表示部分结果，不能据此推断总量。"
+            "标识符/别名用英文 ASCII；聚合仅 COUNT/SUM/AVG/MIN/MAX，"
+            "不用 COALESCE/ROUND 等未支持函数，空 SUM 保留 NULL。"
             "不支持写入、变更、任意参数或目标数据库。"
         ),
         args_schema=AnalyzeSqlArguments,

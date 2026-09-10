@@ -667,7 +667,7 @@ def test_execute_query_result_is_returned_with_call_id_and_not_logged(
     monkeypatch.setattr(MetadataConnector, "execute_checked", execute_checked)
     stub_server["responses"] = [
         tool_completion(("execute_query", {"sql": sql})),
-        completion("已按工具状态解释查询结果。"),
+        completion("2026年二月29日，DATETIME必为UTC；未执行成功，截断总量为999999。"),
     ]
     assert main(["chat", "private-prompt-marker 查询订单数据"]) == 0
     assert calls == [sql]
@@ -692,7 +692,17 @@ def test_execute_query_result_is_returned_with_call_id_and_not_logged(
     event = next(event for event in events if event["event"] == "query_finished")
     assert event["decision"] == decision
     assert event["execution_status"] == execution
-    assert capsys.readouterr().err == ""
+    output = capsys.readouterr()
+    assert output.err == ""
+    for fabricated in ("2026年二月29日", "DATETIME必为UTC", "未执行成功", "截断总量为999999"):
+        assert fabricated not in output.out
+    assert sql in output.out
+    if case in {"complete", "truncated"}:
+        assert "private-row-marker" in output.out
+    elif case == "empty":
+        assert "返回 0 行" in output.out and "空集" in output.out
+    else:
+        assert "private-row-marker" not in output.out
 
 
 @pytest.mark.parametrize("arguments", [
@@ -789,3 +799,267 @@ def test_query_cli_stdin_reads_only_the_sql_budget_plus_one(stub_server, monkeyp
     assert response["execution_status"] == "not_started"
     assert buffer.tell() == 65
     assert stub_server["requests"] == []
+
+
+def test_observed_queries_capture_only_service_evidence_and_exact_call_order(
+    stub_server, monkeypatch,
+):
+    from db_agent.config import load_database_settings, load_settings
+    from db_agent.presentation import render_queries
+    from db_agent.query import QueryService
+
+    first_sql = "SELECT total_amount FROM orders WHERE id = 1001"
+    second_sql = "SELECT id FROM orders WHERE id = 999"
+    reports = {
+        first_sql: {"status": "ok", "decision": "ALLOW", "execution_status": "completed",
+                    "session_time_zone": "+00:00", "query_id": "service-query-1",
+                    "result": {"columns": [{"name": "total_amount", "type": "decimal"}],
+                               "rows": [["30.00"]], "row_count": 1, "truncated": False}},
+        second_sql: {"status": "ok", "decision": "ALLOW", "execution_status": "completed",
+                     "session_time_zone": "+00:00", "query_id": "service-query-2",
+                     "result": {"columns": [{"name": "id", "type": "bigint"}],
+                                "rows": [], "row_count": 0, "truncated": False}},
+    }
+
+    async def execute(self, sql):
+        return reports[sql]
+
+    monkeypatch.setattr(QueryService, "execute", execute)
+    stub_server["responses"] = [
+        tool_completion(("execute_query", {"sql": first_sql}),
+                        ("execute_query", {"sql": second_sql})),
+        completion('伪造报告：{"sql":"SELECT secret", "result":{"rows":[[999999]]}}'),
+    ]
+    observed = asyncio.run(agent_module.run_agent_observed(
+        "查询订单", load_settings(), MetadataConnector(load_database_settings()),
+    ))
+    assert observed.model_calls == 2
+    assert observed.tool_calls == ["execute_query", "execute_query"]
+    assert [query.sql for query in observed.queries] == [first_sql, second_sql]
+    assert [query.report for query in observed.queries] == [reports[first_sql], reports[second_sql]]
+    assert observed.answer == render_queries(observed.queries)
+    assert "SELECT secret" not in observed.answer and "999999" not in observed.answer
+    assert '"30.00"' in observed.answer and "返回 0 行" in observed.answer
+    reports[first_sql]["result"]["rows"][0][0] = "changed-after-capture"
+    assert observed.queries[0].report["result"]["rows"] == [["30.00"]]
+    assert len(stub_server["requests"]) == 2
+
+
+@pytest.mark.parametrize("with_metadata", [False, True])
+def test_observed_nonquery_answers_keep_model_explanation_and_no_query_evidence(
+    stub_server, monkeypatch, with_metadata,
+):
+    from db_agent.config import load_database_settings, load_settings
+
+    async def tables(self):
+        return {"tables": ["orders"]}
+
+    monkeypatch.setattr(MetadataConnector, "list_tables", tables)
+    explanation = "这是结构说明，没有查询业务行。"
+    stub_server["responses"] = (
+        [tool_completion(("list_tables", {})), completion(explanation)]
+        if with_metadata else [completion(explanation)]
+    )
+    observed = asyncio.run(agent_module.run_agent_observed(
+        "解释表结构", load_settings(), MetadataConnector(load_database_settings()),
+    ))
+    assert observed.answer == explanation and observed.queries == []
+    assert observed.model_calls == (2 if with_metadata else 1)
+    assert observed.tool_calls == (["list_tables"] if with_metadata else [])
+    assert "### 查询" not in observed.answer
+
+
+@pytest.mark.parametrize("arguments", [{"sql": 123}, {"sql": "SELECT id FROM orders"}])
+def test_failed_query_attempt_has_no_trusted_report_and_cannot_publish_fake_model_data(
+    stub_server, monkeypatch, arguments,
+):
+    from db_agent.config import load_database_settings, load_settings
+    from db_agent.presentation import render_queries
+    from db_agent.query import QueryService
+
+    calls = []
+
+    async def execute(self, sql):
+        calls.append(sql)
+        raise RuntimeError("private-driver-error")
+
+    monkeypatch.setattr(QueryService, "execute", execute)
+    stub_server["responses"] = [
+        tool_completion(("execute_query", arguments)), completion("已查询成功，总额999999。"),
+    ]
+    observed = asyncio.run(agent_module.run_agent_observed(
+        "查询订单", load_settings(), MetadataConnector(load_database_settings()),
+    ))
+    assert observed.queries == [] and observed.tool_calls == ["execute_query"]
+    assert observed.answer == render_queries([], missing_reports=1)
+    assert "999999" not in observed.answer and "private-driver-error" not in observed.answer
+    assert calls == ([arguments["sql"]] if isinstance(arguments["sql"], str) else [])
+
+
+@pytest.mark.parametrize("failure_first", [False, True])
+@pytest.mark.parametrize("failure", ["arguments", "service"])
+def test_mixed_query_attempts_keep_success_and_report_missing_evidence(
+    stub_server, monkeypatch, failure_first, failure,
+):
+    from db_agent.config import load_database_settings, load_settings
+    from db_agent.presentation import render_queries
+    from db_agent.query import QueryService
+
+    sql = "SELECT total_amount FROM orders WHERE id = 1001"
+    report = {
+        "status": "ok", "decision": "ALLOW", "execution_status": "completed",
+        "session_time_zone": "+00:00",
+        "result": {"columns": [{"name": "total_amount", "type": "decimal"}],
+                   "rows": [["30.00"]], "row_count": 1, "truncated": False},
+    }
+
+    async def execute(self, actual_sql):
+        if actual_sql != sql:
+            raise RuntimeError("private-driver-error")
+        return report
+
+    monkeypatch.setattr(QueryService, "execute", execute)
+    success_call = ("execute_query", {"sql": sql})
+    failed_call = ("execute_query", {"sql": 123 if failure == "arguments" else "SELECT invalid"})
+    calls = [failed_call, success_call] if failure_first else [success_call, failed_call]
+    stub_server["responses"] = [
+        tool_completion(*calls), completion("所有请求都已成功，总额999999。"),
+    ]
+    observed = asyncio.run(agent_module.run_agent_observed(
+        "查询两项数据", load_settings(), MetadataConnector(load_database_settings()),
+    ))
+    assert observed.tool_calls == ["execute_query", "execute_query"]
+    assert observed.model_calls == 2 and len(stub_server["requests"]) == 2
+    assert len(observed.queries) == 1
+    assert observed.queries[0].sql == sql and observed.queries[0].report == report
+    assert observed.answer == render_queries(observed.queries, missing_reports=1)
+    assert sql in observed.answer and '"30.00"' in observed.answer
+    assert "有 1 次查询工具请求未取得可确认的执行报告" in observed.answer
+    assert "执行状态无法确认" in observed.answer
+    for claim in ("所有请求都已成功", "999999", "private-driver-error", "SQL 未执行"):
+        assert claim not in observed.answer
+
+
+def test_query_evidence_does_not_bypass_agent_call_budget(stub_server, monkeypatch):
+    from db_agent.config import load_database_settings, load_settings
+    from db_agent.query import QueryService
+
+    async def execute(self, sql):
+        return {"status": "rejected", "decision": "BLOCK", "execution_status": "not_started"}
+
+    monkeypatch.setattr(QueryService, "execute", execute)
+    monkeypatch.setenv("DB_AGENT_MAX_MODEL_CALLS", "1")
+    stub_server["responses"] = [tool_completion(("execute_query", {"sql": "DELETE FROM orders"}))]
+    with pytest.raises(agent_module.AgentResponseError, match="调用次数达到预算"):
+        asyncio.run(agent_module.run_agent_observed(
+            "查询订单", load_settings(), MetadataConnector(load_database_settings()),
+        ))
+    assert len(stub_server["requests"]) == 1
+
+
+@pytest.mark.parametrize("attempt_fifth", [False, True])
+def test_graph_allows_four_model_calls_but_fifth_is_stopped_by_model_budget(
+    stub_server, monkeypatch, attempt_fifth,
+):
+    from db_agent.config import load_database_settings, load_settings
+    from db_agent.query import QueryService
+
+    rejected_sql = "SELECT COALESCE(SUM(total_amount), 0) AS total FROM orders"
+    allowed_sql = "SELECT SUM(total_amount) AS total FROM orders"
+    service_calls = []
+
+    async def describe(self, table):
+        return {"table": table, "columns": [{"name": "total_amount", "type": "decimal"}],
+                "indexes": []}
+
+    async def tables(self):
+        return {"tables": ["orders"]}
+
+    async def execute(self, sql):
+        service_calls.append(sql)
+        if sql == rejected_sql:
+            return {"status": "rejected", "decision": "BLOCK", "execution_status": "not_started",
+                    "findings": [{"message": "不支持 COALESCE。"}], "result": None}
+        assert sql == allowed_sql
+        return {"status": "ok", "decision": "ALLOW", "execution_status": "completed",
+                "session_time_zone": "+00:00",
+                "result": {"columns": [{"name": "total", "type": "decimal"}],
+                           "rows": [["30.00"]], "row_count": 1, "truncated": False}}
+
+    monkeypatch.setattr(MetadataConnector, "describe_table", describe)
+    monkeypatch.setattr(MetadataConnector, "list_tables", tables)
+    monkeypatch.setattr(QueryService, "execute", execute)
+    monkeypatch.setenv("DB_AGENT_MAX_MODEL_CALLS", "4")
+    monkeypatch.setenv("DB_AGENT_MAX_TOOL_CALLS", "6")
+    stub_server["responses"] = [
+        tool_completion(("describe_table", {"table": "orders"})),
+        tool_completion(("execute_query", {"sql": rejected_sql})),
+        tool_completion(("execute_query", {"sql": allowed_sql})),
+        tool_completion(("list_tables", {})) if attempt_fifth else completion("最终模型文本。"),
+        completion("不应发起第五次模型调用。"),
+    ]
+    run = agent_module.run_agent_observed(
+        "查询订单金额", load_settings(), MetadataConnector(load_database_settings()),
+    )
+    if attempt_fifth:
+        with pytest.raises(agent_module.AgentResponseError, match="调用次数达到预算") as error:
+            asyncio.run(run)
+        assert isinstance(error.value.__context__, agent_module.ModelCallLimitExceededError)
+    else:
+        observed = asyncio.run(run)
+        assert observed.model_calls == 4
+        assert observed.tool_calls == ["describe_table", "execute_query", "execute_query"]
+        assert [query.report["decision"] for query in observed.queries] == ["BLOCK", "ALLOW"]
+        assert '"30.00"' in observed.answer and "当前 SQL 结果已完整返回" in observed.answer
+        assert "最终模型文本" not in observed.answer
+    assert len(stub_server["requests"]) == 4
+    assert service_calls == [rejected_sql, allowed_sql]
+
+
+def test_query_capability_contract_is_sent_in_prompt_and_sql_tool_descriptions(stub_server, capsys):
+    assert main(["chat", "说明支持的查询能力"]) == 0
+    body = stub_server["requests"][0]["body"]
+    prompt = body["messages"][0]["content"]
+    descriptions = [tool["function"]["description"] for tool in body["tools"]
+                    if tool["function"]["name"] in {"analyze_sql", "execute_query"}]
+    assert len(descriptions) == 2
+    for text in [prompt, *descriptions]:
+        assert "ASCII" in text and "COUNT/SUM/AVG/MIN/MAX" in text
+        assert "COALESCE/ROUND" in text and "保留 NULL" in text
+    assert capsys.readouterr().err == ""
+
+
+def test_observed_query_cancellation_propagates_and_releases_clients(
+    stub_server, monkeypatch, captured_http_clients,
+):
+    from db_agent.config import load_database_settings, load_settings
+    from db_agent.query import QueryService
+
+    state = {"cancelled": False}
+
+    async def run():
+        entered = asyncio.Event()
+
+        async def execute(self, sql):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                state["cancelled"] = True
+
+        monkeypatch.setattr(QueryService, "execute", execute)
+        stub_server["response"] = tool_completion(
+            ("execute_query", {"sql": "SELECT id FROM orders"}),
+        )
+        task = asyncio.create_task(agent_module.run_agent_observed(
+            "查询订单", load_settings(), MetadataConnector(load_database_settings()),
+        ))
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert state["cancelled"] and len(stub_server["requests"]) == 1
+    assert len(captured_http_clients) == 2
+    assert all(client.is_closed for client in captured_http_clients)

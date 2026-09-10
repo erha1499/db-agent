@@ -20,6 +20,7 @@ from openai import DefaultAsyncHttpxClient, DefaultHttpxClient
 from db_agent.analysis import SqlAnalysisService
 from db_agent.config import AnalysisSettings, QuerySettings, Settings
 from db_agent.db import DatabaseError, MetadataConnector
+from db_agent.presentation import AgentRunResult, QueryExecution, render_queries
 from db_agent.query import QueryService
 from db_agent.records import RunRecord
 from db_agent.tools import analysis_tool, metadata_tools, query_tool
@@ -36,9 +37,15 @@ CTE、子查询等未支持语法返回 UNKNOWN 时说明限制，不把简化�
 引用具体表名和索引名，区分工具事实与建议。不把字段名猜测的关系说成已验证的外键。
 用户要求查实际数据时使用 execute_query；仅要求解释、诊断或编写 SQL 时使用元数据和 analyze_sql。
 查数任务默认简洁回答，仅给统计口径、实际数据和完整性，必要时列出实际 SQL。
+查询最终回答由提交的 SQL 和工具结果直接展示，末尾自由文字不会用于过滤、计算或合并结果。
+用户要求的筛选、分组、排序和返回列必须完整体现在 SQL 中，不能留给末尾文字加工。
+用户只需一次查数时使用一条满足需求的 SQL；成功取得所需结果后结束，
+不为已明确的业务关联额外分表查数验证，也不依赖末尾文字拼接分表结果。
 用户未要求诊断时，不展示计划或协议字段，不增加原因猜测、后续方案或提问。
 用户已经明确的字段和条件可直接采用；不要要求重复确认，也不要建议当前不支持的函数或语法。
 所有建议中的 SQL 也须符合支持范围，不使用未绑定的 :name 或 ? 占位符。
+标识符和别名使用英文 ASCII；聚合仅支持 COUNT/SUM/AVG/MIN/MAX，不使用 COALESCE/ROUND 等函数。
+空集合的 SUM 保留 NULL，不使用未支持的函数把 NULL 改成 0。
 execute_query 已包含完整预检，无需为了获取执行许可额外先调用 analyze_sql。
 只有 execute_query 的 status=ok 且 result 不为 null 时可以引用实际结果；ALLOW 本身不代表查询成功。
 rows=[] 且 execution_status=completed 表示本次查询返回 0 行，不能当作工具失败。
@@ -63,6 +70,7 @@ class RuntimeMiddleware(AgentMiddleware):
         self.tool_names = frozenset(tool_names)
         self.tool_lock = asyncio.Lock()
         self.model_calls = 0
+        self.tool_calls: list[str] = []
 
     async def awrap_model_call(self, request, handler):
         self.model_calls += 1
@@ -94,6 +102,7 @@ class RuntimeMiddleware(AgentMiddleware):
             started = time.monotonic()
             name = request.tool_call["name"]
             known = name in self.tool_names
+            self.tool_calls.append(name if known else "unknown")
             # The provider supplies call IDs: retain only a digest in local records.
             call_id = hashlib.sha256(str(request.tool_call["id"]).encode()).hexdigest()[:16]
             status, code = "error", "CANCELLED"
@@ -139,9 +148,25 @@ async def run_agent(
     analysis_settings: AnalysisSettings | None = None,
     query_settings: QuerySettings | None = None,
 ) -> str:
-    """执行一次独立会话，框架负责消息调度，不保留历史。"""
+    """Compatibility entry point returning only the final answer."""
+    result = await run_agent_observed(
+        prompt, settings, connector, record, analysis_settings, query_settings,
+    )
+    return result.answer
+
+
+async def run_agent_observed(
+    prompt: str,
+    settings: Settings,
+    connector: MetadataConnector | None = None,
+    record: RunRecord | None = None,
+    analysis_settings: AnalysisSettings | None = None,
+    query_settings: QuerySettings | None = None,
+) -> AgentRunResult:
+    """One independent run with in-memory service evidence, never raw-data logs."""
     if not prompt.strip():
         raise ValueError("问题不能为空")
+    executions: list[QueryExecution] = []
 
     # 显式映射项目配置，不读取全局 OPENAI_* 凭据，也不启用第三方追踪。
     async with AsyncExitStack() as clients:
@@ -170,12 +195,14 @@ async def run_agent(
                     service = SqlAnalysisService(
                         connector, analysis_limits, record
                     )
-                    queries = QueryService(
+                    query_service = QueryService(
                         connector, analysis_limits, query_settings or QuerySettings(), record
                     )
                     tools = [
-                        *metadata_tools(connector), analysis_tool(service), query_tool(queries),
+                        *metadata_tools(connector), analysis_tool(service),
+                        query_tool(query_service, executions.append),
                     ]
+                runtime = RuntimeMiddleware(record, {tool.name for tool in tools})
                 agent = create_agent(
                     model=model,
                     tools=tools,
@@ -183,7 +210,7 @@ async def run_agent(
                     if connector
                     else "默认使用中文回答。当前未启用数据库工具。",
                     middleware=[
-                        RuntimeMiddleware(record, {tool.name for tool in tools}),
+                        runtime,
                         ModelCallLimitMiddleware(
                             run_limit=settings.max_model_calls if connector else 1,
                             exit_behavior="error",
@@ -196,7 +223,8 @@ async def run_agent(
                 result = await agent.ainvoke(
                     {"messages": [{"role": "user", "content": prompt}]},
                     config={
-                        "recursion_limit": 3 * settings.max_model_calls + 4,
+                        # A tool round also runs three before/after-model budget nodes.
+                        "recursion_limit": 5 * settings.max_model_calls + 4,
                         "max_concurrency": 1,
                     },
                 )
@@ -208,7 +236,11 @@ async def run_agent(
         raise AgentResponseError("模型返回了当前未支持的消息或工具调用")
     if message.response_metadata.get("finish_reason") == "length":
         raise AgentResponseError("模型输出达到 token 上限，请缩小问题或调整输出预算")
-    answer = message.text.strip()
+    query_calls = runtime.tool_calls.count("execute_query")
+    answer = (
+        render_queries(executions, missing_reports=query_calls - len(executions))
+        if query_calls else message.text.strip()
+    )
     if not answer:
         raise AgentResponseError("模型未返回文本回答")
-    return answer
+    return AgentRunResult(answer, executions, runtime.model_calls, runtime.tool_calls.copy())

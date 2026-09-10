@@ -23,7 +23,11 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def database_settings():
-    return load_database_settings()
+    settings = load_database_settings()
+    # This fixture only tests the original public tables, even after ecommerce is loaded.
+    original = ("customers", "orders", "order_items")
+    assert set(original).issubset(settings.allowed_tables)
+    return settings.model_copy(update={"allowed_tables": original})
 
 
 def test_connection_and_authorized_fixture_tables(database_settings):
