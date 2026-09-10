@@ -4,7 +4,7 @@
 
 首版采用 **Python + LangChain + OpenAI 兼容模型接口**。使用 LangChain 的 `create_agent` 管理模型和工具协议，减少基础运行时开发，把精力放在数据库业务、执行边界和验证上。
 
-> **当前状态：模型接入与 CLI 已实现，已提供本地 MySQL 配置。** 已提供依赖配置、模型配置校验、真实模型连通性检查、单轮对话 CLI、测试入口和 MySQL 启动配置。Agent 当前未注册工具，尚无数据库连接器、SQL 预检或查询执行能力；下文首版业务范围仍是计划。
+> **当前状态：已接入 MySQL 连接器与元数据工具。** 已提供数据库连接检查；CLI 和 Agent 可以列出授权表、读取字段与索引，并保存最小运行记录。SQL 预检、`EXPLAIN` 和业务 `SELECT` 执行尚未实现；不能把结构读取当成查询风险或性能验证。
 
 ## 快速开始
 
@@ -16,13 +16,12 @@ cd db-agent
 uv sync
 
 cp .env.example .env
-# 编辑本地 .env，填写三个 DB_AGENT_* 必填配置后运行
+# 编辑本地 .env，填写三个模型必填配置后运行
 uv run db-agent config
 uv run db-agent check
-uv run db-agent chat "解释一下 SQL 预检的作用"
 ```
 
-`config` 校验配置，仅显示三个必填项的状态，不显示值，也不请求模型；`check` 发起真实模型请求；`chat` 每次创建独立会话，非流式返回一条回复，不保留聊天记忆。也可以使用 `uv run python -m db_agent` 调用相同命令。
+`config` 校验模型配置，仅显示三个必填项的状态，不显示值，也不请求模型；`check` 仅发起一次真实模型请求，不连接数据库。完成下方数据库配置后，可以使用 `db` 子命令或带元数据工具的 `chat`；每次 `chat` 创建独立会话，非流式返回回复，不保留聊天记忆。也可以使用 `uv run python -m db_agent` 调用相同命令。
 
 | 配置项 | 用途 | 默认值 |
 | --- | --- | --- |
@@ -30,10 +29,12 @@ uv run db-agent chat "解释一下 SQL 预检的作用"
 | `DB_AGENT_API_KEY` | 模型接口凭据 | 必填 |
 | `DB_AGENT_MODEL` | 模型名称 | 必填 |
 | `DB_AGENT_REQUEST_TIMEOUT_SECONDS` | 单次模型请求超时（秒） | `30` |
-| `DB_AGENT_RUN_TIMEOUT_SECONDS` | 一次 CLI 运行的模型调用总时限（秒） | `60` |
-| `DB_AGENT_MAX_OUTPUT_TOKENS` | 模型输出 token 上限 | `1024` |
+| `DB_AGENT_RUN_TIMEOUT_SECONDS` | 一次 Agent 运行的模型与工具总时限（秒） | `60` |
+| `DB_AGENT_MAX_OUTPUT_TOKENS` | 每次模型响应的输出 token 上限 | `1024` |
+| `DB_AGENT_MAX_MODEL_CALLS` | 一次 Agent 运行的模型调用上限 | `4` |
+| `DB_AGENT_MAX_TOOL_CALLS` | 一次 Agent 运行的工具调用上限 | `6` |
 
-模型配置优先读取当前工作目录的 `.env`，未定义的配置项才回退到同名 `DB_AGENT_*` 环境变量，避免旧 shell 配置覆盖本地修改。复制 [.env.example](.env.example) 后，在本地 `.env` 填写真实配置；应用不会执行 shell 配置文件。`.env` 和 `.env.*` 由 Git 忽略，只有占位模板 `.env.example` 纳入版本控制，真实配置不得提交或推送。运行时禁用 LangSmith tracing，避免继承本机 tracing 配置后上传对话。
+应用的模型与数据库配置优先读取当前工作目录的 `.env`，未定义的配置项才回退到同名 `DB_AGENT_*` 环境变量，避免旧 shell 配置覆盖本地修改。复制 [.env.example](.env.example) 后，在本地 `.env` 填写真实配置；应用不会执行 shell 配置文件。`.env` 和 `.env.*` 由 Git 忽略，只有占位模板 `.env.example` 纳入版本控制，真实配置不得提交或推送。运行时禁用 LangSmith tracing，避免继承本机 tracing 配置后上传对话。
 
 本地验证入口：
 
@@ -43,7 +44,7 @@ uv run ruff check .
 git diff --check
 ```
 
-离线测试验证初始化代码的配置和运行行为；真实模型连通性单独通过 `check` 验证。两者均不代表数据库业务闭环已经完成。
+离线测试验证配置、连接器边界与 Agent 运行行为；真实模型连通性单独通过 `check` 验证，数据库连接使用 `db check` 验证。各项检查分别提供证据，不代表尚未实现的 SQL 业务闭环已经完成。
 
 ## 本地 MySQL
 
@@ -62,8 +63,13 @@ docker compose ps
 | `DB_AGENT_MYSQL_USER` | `db_agent_reader` |
 | `DB_AGENT_MYSQL_PASSWORD` | 在 `.env` 设置；24–128 位字母、数字、`_` 或 `-` |
 | `DB_AGENT_MYSQL_ROOT_PASSWORD` | 在 `.env` 单独设置，仅用于本地管理 |
+| `DB_AGENT_MYSQL_ALLOWED_TABLES` | 允许 Agent 读取元数据的表名 JSON 数组，默认 `[]` |
+| `DB_AGENT_MYSQL_CONNECT_TIMEOUT_SECONDS` | 连接超时，默认 `3` 秒 |
+| `DB_AGENT_MYSQL_METADATA_TIMEOUT_SECONDS` | 单次元数据请求时限，默认 `5` 秒，包含连接器内排队、连接和读取 |
+| `DB_AGENT_MYSQL_MAX_METADATA_ROWS` | 单次元数据结果行数上限，默认 `200` |
+| `DB_AGENT_MYSQL_MAX_METADATA_BYTES` | 单次元数据结果 JSON 字节上限，默认 `32768` |
 
-服务只绑定本机 `127.0.0.1`，默认容器名为 `db-agent-mysql-1`，数据保存在命名卷 `db-agent_mysql_data`。首次初始化创建 `db_agent` 数据库，并仅为 `db_agent_reader` 授予该数据库的 `SELECT` 和 `SHOW VIEW` 权限。主机、数据库名和用户名配置用于记录连接信息；修改这些值不会改变 Compose 的固定绑定或初始化对象。
+服务只绑定本机 `127.0.0.1`，默认容器名为 `db-agent-mysql-1`，数据保存在命名卷 `db-agent_mysql_data`。首次初始化创建 `db_agent` 数据库，并仅为 `db_agent_reader` 授予该数据库的 `SELECT` 和 `SHOW VIEW` 权限。应用按上表连接配置访问数据源；修改主机、数据库名或用户名不会改变 Compose 的固定绑定或初始化对象。Agent 拒绝使用 root，表名白名单还会独立限制可访问的元数据范围。
 
 宿主机的数据库客户端使用上表连接信息，密码取自本地 `.env`。已安装 MySQL CLI 时可交互输入密码连接：
 
@@ -83,7 +89,42 @@ docker compose exec mysql mysql -uroot -p
 docker compose stop mysql
 ```
 
-账号与密码只在空数据卷首次启动时初始化。已有数据卷后修改 `.env` 不会自动修改数据库密码；需要通过 SQL 修改对应账号密码，再同步本地配置。数据库配置当前供 Compose 环境和外部客户端使用，Agent 连接器与数据库工具尚未接入；本地实例配置不代表生产部署或数据库业务验收完成。
+账号与密码只在空数据卷首次启动时初始化。已有数据卷后修改 `.env` 不会自动修改数据库密码；需要通过 SQL 修改对应账号密码，再同步本地配置。本地实例配置不代表生产部署或数据库业务验收完成。
+
+### 创建合成业务数据与读取结构
+
+数据库启动不会自动创建业务表。管理员可以执行固定的本地初始化脚本：
+
+```bash
+uv run python scripts/seed_local_mysql.py
+```
+
+[脚本](scripts/seed_local_mysql.py) 先核对 `db-agent/mysql` 容器及 `db_agent` 数据库，再执行固定的[合成业务数据](tests/fixtures/mysql_business.sql)：`customers`、`orders`、`order_items`，包含主键、外键、复合索引，以及取消、退款、零金额、无订单客户等边界数据。任一点名表已存在时，整个初始化停止，不写入或覆盖；重复运行只报告已有表。DDL 中途失败可能保留已建表，脚本不会自动重试或删除。
+
+这是管理员开发脚本，不是 Agent 工具，不接受自定义 SQL 或目标参数。root 凭据只在容器内用于初始化，业务连接使用 reader。接着在本地 `.env` 中明确授权表名：
+
+```dotenv
+DB_AGENT_MYSQL_ALLOWED_TABLES='["customers","orders","order_items"]'
+```
+
+```bash
+uv run db-agent db check
+uv run db-agent db tables
+uv run db-agent db describe orders
+uv run db-agent chat "查看 orders 的字段和索引，说明按 customer_id 和 created_at 查询时可考虑哪些索引。"
+```
+
+三个 `db` 子命令不需要模型凭据；`chat` 需要模型与数据库配置，默认接入 `list_tables`、`describe_table`。白名单为空时不列出任何表，描述未授权表会被拒绝。当前仅支持基础表的表名、字段与索引，不返回表注释、默认值、外键元数据或业务行；模型根据字段名推断关系时必须说明尚未验证。
+
+合成数据与白名单准备好后，显式运行真实 MySQL 集成测试：
+
+```bash
+DB_AGENT_MYSQL_INTEGRATION=1 uv run pytest tests/test_mysql_integration.py -q
+```
+
+普通 `uv run pytest` 会跳过这些集成测试，避免隐式依赖数据库。集成测试不创建数据，验证真实元数据与账号权限；固定 INSERT 权限探针使用零行条件，并在事务结束时回滚。驱动采用 `aiomysql[rsa]`，包含本地 MySQL 密码认证所需的 RSA 支持。
+
+每个连接器顺序处理请求，超过时间、行数或字节预算会返回错误并清理连接。`check`、`chat` 和 `db` 命令在 `outputs/runs/<uuid>.jsonl` 写入运行、模型、工具或数据库事件，记录状态、错误码、耗时及关联标识。记录不包含问题原文、密码、SQL、工具参数或结果正文；工具调用 ID 只保存摘要。记录失败会在 stderr 提示一次并继续业务，这些记录不承担审批账本职责。
 
 ## 要解决的业务问题
 
@@ -97,7 +138,7 @@ docker compose stop mysql
 
 数据库总容量只是背景。风险判断应落到具体访问对象、查询计划和执行限制上；一个小表的全表扫描可能合理，带 `LIMIT` 的聚合查询也可能消耗大量资源。
 
-## 首版范围（计划）
+## 首版业务目标
 
 | 能力 | 首版做到什么程度 |
 | --- | --- |
@@ -153,25 +194,27 @@ flowchart TD
 
 ## 技术与模块
 
-当前通过 `langchain_openai.ChatOpenAI` 接入一个 OpenAI 兼容模型，由 `langchain.agents.create_agent` 创建 Agent。LangChain 内部使用 LangGraph，本项目不自写工具循环或自定义 Graph。当前 `tools=[]`，每次运行只调用一次模型，并限制请求时间、总时限与输出 token，禁用自动重试。
+当前通过 `langchain_openai.ChatOpenAI` 接入一个 OpenAI 兼容模型，由 `langchain.agents.create_agent` 调度 `list_tables` 和 `describe_table`。LangChain 内部使用 LangGraph，本项目不自写工具循环或自定义 Graph。默认每次 Agent 运行最多调用模型 4 次、工具 6 次，总时限 60 秒；工具顺序执行，模型请求禁用自动重试。
 
 | 模块 | 状态 | 职责 |
 | --- | --- | --- |
-| `src/db_agent/config.py` | 已建立 | 从环境或本地 `.env` 读取、校验模型配置 |
-| `src/db_agent/agent.py` | 已建立 | 模型接入、LangChain Agent 创建、运行预算与响应处理 |
-| `src/db_agent/cli.py` | 已建立 | 配置检查、连通性检查与单轮对话入口 |
-| `tests` | 已建立 | 不依赖真实模型的初始化行为测试 |
+| `src/db_agent/config.py` | 已建立 | 独立读取并校验模型与数据库配置、本地表白名单和运行预算 |
+| `src/db_agent/agent.py` / `tools.py` | 已建立 | LangChain 调度、元数据工具、调用预算与响应处理 |
+| `src/db_agent/db.py` | 已建立 | 受限 MySQL 连接、授权基础表的字段与索引读取 |
+| `src/db_agent/cli.py` | 已建立 | 模型与数据库检查、元数据读取、独立对话入口 |
+| `src/db_agent/records.py` | 已建立 | 最小运行事件与脱敏关联标识 |
+| `tests` | 已建立 | 离线行为测试、显式开启的 MySQL 集成测试与公开合成数据 fixture |
 | `compose.yaml` / `infra/mysql/init` | 已建立 | 本地 MySQL、持久化数据卷及只读账号初始化 |
+| `scripts/seed_local_mysql.py` | 已建立 | 管理员显式创建固定合成业务表与数据 |
 | `policy` | 计划 | 资源权限、SQL 语法检查、计划规则与风险决策 |
-| `db` | 计划 | 元数据、执行计划及带强制预检的查询执行 |
-| `observability` | 计划 | 结构化事件、脱敏记录与结果引用 |
-| 数据库测试 / `evals` | 计划 | MySQL 集成测试、确定性风险规则测试和模型任务评测 |
+| 查询执行与诊断 | 计划 | 普通 EXPLAIN、强制预检的业务 SELECT、诊断证据与结果引用 |
+| 风险规则测试 / `evals` | 计划 | 确定性风险规则测试和固定模型任务评测 |
 
-当前本地 MySQL 配置使用 8.4.11，镜像引用以 `compose.yaml` 为准；Agent 接入后需在隔离测试环境验证连接、权限、预检和执行限制。领域规则和连接器保持框架无关，框架负责调度，确定性代码负责授权与执行判断。实际遇到跨进程审批、持久恢复或复杂编排需求时，再扩展相应能力。
+当前本地 MySQL 配置使用 8.4.11，镜像引用以 `compose.yaml` 为准。元数据连接器的表白名单来自本地可信配置，不等于多用户身份与资源授权服务；后续 SQL 预检和执行仍需独立实现与验收。领域规则和连接器保持框架无关，框架负责调度，确定性代码负责授权与执行判断。实际遇到跨进程审批、持久恢复或复杂编排需求时，再扩展相应能力。
 
 ## 近期交付与验收
 
-目标是分阶段完成可实际使用的 SQL 预检与诊断业务闭环。每个阶段以真实工具和可复现验收为交付条件，优先完成一条受控链路，再扩大功能范围。接入具体使用环境前，还需核对目标版本、账号权限、运行限制与业务结果；当前不具备数据库执行能力。
+目标是分阶段完成可实际使用的 SQL 预检与诊断业务闭环。每个阶段以真实工具和可复现验收为交付条件，优先完成一条受控链路，再扩大功能范围。接入具体使用环境前，还需核对目标版本、账号权限、运行限制与业务结果；当前只支持连接检查与元数据读取，不具备业务 SQL 执行能力。
 
 | 阶段 | 交付 | 验收 |
 | --- | --- | --- |
@@ -217,6 +260,7 @@ flowchart TD
 
 - [LangChain：快速开始](https://docs.langchain.com/oss/python/langchain/quickstart)
 - [LangChain：ChatOpenAI 接入](https://docs.langchain.com/oss/python/integrations/chat/openai)
+- [aiomysql：连接 API](https://aiomysql.readthedocs.io/en/stable/connection.html)
 - [MySQL 8.4：EXPLAIN](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
 - [MySQL 8.4：执行计划输出](https://dev.mysql.com/doc/refman/8.4/en/explain-output.html)
 - [MySQL 8.4：LIMIT 优化](https://dev.mysql.com/doc/refman/8.4/en/limit-optimization.html)

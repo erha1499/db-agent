@@ -1,10 +1,14 @@
-"""Read project-scoped model settings without exposing credential values."""
+"""Read project-scoped settings without exposing credential values."""
 
+import json
+import re
+from typing import Annotated, TypeVar
 from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import (
     BaseSettings,
+    NoDecode,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     SettingsError,
@@ -15,7 +19,7 @@ class ConfigurationError(ValueError):
     """A configuration failure safe to show in the CLI."""
 
 
-class Settings(BaseSettings):
+class _ProjectSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="DB_AGENT_",
         env_file=".env",
@@ -24,13 +28,6 @@ class Settings(BaseSettings):
         str_strip_whitespace=True,
         hide_input_in_errors=True,
     )
-
-    api_key: SecretStr
-    openai_base_url: str = Field(min_length=1)
-    model: str = Field(min_length=1)
-    request_timeout_seconds: float = Field(default=30, gt=0, le=300, allow_inf_nan=False)
-    run_timeout_seconds: float = Field(default=60, gt=0, le=600, allow_inf_nan=False)
-    max_output_tokens: int = Field(default=1024, gt=0, le=16384)
 
     @classmethod
     def settings_customise_sources(
@@ -43,6 +40,17 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         # 本地文件优先，避免已加载的 shell 变量覆盖用户对 .env 的修改。
         return init_settings, dotenv_settings, env_settings, file_secret_settings
+
+
+class Settings(_ProjectSettings):
+    api_key: SecretStr
+    openai_base_url: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    request_timeout_seconds: float = Field(default=30, gt=0, le=300, allow_inf_nan=False)
+    run_timeout_seconds: float = Field(default=60, gt=0, le=600, allow_inf_nan=False)
+    max_output_tokens: int = Field(default=1024, gt=0, le=16384)
+    max_model_calls: int = Field(default=4, ge=1, le=10)
+    max_tool_calls: int = Field(default=6, ge=1, le=20)
 
     @field_validator("api_key")
     @classmethod
@@ -70,18 +78,98 @@ class Settings(BaseSettings):
         return value
 
 
-def load_settings() -> Settings:
-    """Load the current directory's .env first, with environment as fallback."""
+def _validate_identifier(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", value) is None:
+        raise ValueError("must be a supported ASCII MySQL identifier")
+    return value
+
+
+class DatabaseSettings(_ProjectSettings):
+    """Independent credentials and limits for the database reader connection."""
+
+    model_config = SettingsConfigDict(env_prefix="DB_AGENT_MYSQL_")
+
+    host: str = Field(default="127.0.0.1", min_length=1)
+    port: int = Field(default=13306, ge=1, le=65535)
+    database: str = "db_agent"
+    user: str = Field(default="db_agent_reader", min_length=1)
+    password: SecretStr
+    allowed_tables: Annotated[tuple[str, ...], NoDecode] = Field(default=(), max_length=100)
+    connect_timeout_seconds: float = Field(default=3, ge=1, le=30, allow_inf_nan=False)
+    metadata_timeout_seconds: float = Field(default=5, gt=0, le=60, allow_inf_nan=False)
+    max_metadata_rows: int = Field(default=200, ge=1, le=1000)
+    max_metadata_bytes: int = Field(default=32768, ge=1024, le=131072)
+
+    @field_validator("database")
+    @classmethod
+    def validate_database(cls, value: str) -> str:
+        _validate_identifier(value)
+        if value.casefold() in {"information_schema", "mysql", "performance_schema", "sys"}:
+            raise ValueError("system databases are not allowed")
+        return value
+
+    @field_validator("user")
+    @classmethod
+    def validate_user(cls, value: str) -> str:
+        if value.casefold() == "root":
+            raise ValueError("the root account is not allowed")
+        return value
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def validate_password(cls, value: object) -> SecretStr:
+        if isinstance(value, SecretStr):
+            value = value.get_secret_value()
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("must not be blank")
+        # Database passwords can contain meaningful leading or trailing whitespace.
+        return SecretStr(value)
+
+    @field_validator("allowed_tables", mode="before")
+    @classmethod
+    def parse_allowed_tables(cls, value: object) -> object:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                raise ValueError("must be a JSON array of table identifiers") from None
+            if not isinstance(value, list):
+                raise ValueError("must be a JSON array of table identifiers")
+        return value
+
+    @field_validator("allowed_tables")
+    @classmethod
+    def validate_allowed_tables(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for table in value:
+            _validate_identifier(table)
+        return value
+
+
+_SettingsT = TypeVar("_SettingsT", bound=_ProjectSettings)
+
+
+def _load_settings(settings_type: type[_SettingsT]) -> _SettingsT:
+    prefix = settings_type.model_config["env_prefix"]
     try:
-        return Settings()
+        return settings_type()
     except ValidationError as exc:
         fields = sorted(
             {
-                f"DB_AGENT_{error['loc'][0].upper()}"
+                f"{prefix}{error['loc'][0].upper()}"
                 for error in exc.errors(include_input=False, include_context=False)
-                if error["loc"] and error["loc"][0] in Settings.model_fields
+                if error["loc"] and error["loc"][0] in settings_type.model_fields
             }
         )
         raise ConfigurationError("配置缺失或无效：" + ", ".join(fields)) from None
     except (OSError, UnicodeError, SettingsError):
-        raise ConfigurationError("无法读取配置：.env / DB_AGENT_*") from None
+        raise ConfigurationError(f"无法读取配置：.env / {prefix}*") from None
+
+
+def load_settings() -> Settings:
+    """Load the current directory's .env first, with environment as fallback."""
+    return _load_settings(Settings)
+
+
+def load_database_settings() -> DatabaseSettings:
+    """Load only reader database settings; model configuration is not required."""
+    return _load_settings(DatabaseSettings)

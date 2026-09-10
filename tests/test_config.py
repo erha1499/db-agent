@@ -1,9 +1,10 @@
+import json
 import os
 import traceback
 
 import pytest
 
-from db_agent.config import ConfigurationError, load_settings
+from db_agent.config import ConfigurationError, load_database_settings, load_settings
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +104,8 @@ def test_valid_settings_preserve_url_path_and_hide_api_key(valid_environment):
     assert settings.request_timeout_seconds == 30
     assert settings.run_timeout_seconds == 60
     assert settings.max_output_tokens == 1024
+    assert settings.max_model_calls == 4
+    assert settings.max_tool_calls == 6
     assert "synthetic-test-key" not in repr(settings)
     assert "synthetic-test-key" not in str(settings)
     assert "synthetic-test-key" not in settings.model_dump_json()
@@ -186,3 +189,197 @@ def test_invalid_dotenv_encoding_is_reported_without_contents(tmp_path):
 
     assert str(exc.value) == "无法读取配置：.env / DB_AGENT_*"
     assert "secret-marker" not in "".join(traceback.format_exception(exc.value))
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("MAX_MODEL_CALLS", "0"),
+        ("MAX_MODEL_CALLS", "11"),
+        ("MAX_MODEL_CALLS", "1.5"),
+        ("MAX_TOOL_CALLS", "0"),
+        ("MAX_TOOL_CALLS", "21"),
+        ("MAX_TOOL_CALLS", "1.5"),
+    ],
+)
+def test_model_and_tool_call_budgets_are_bounded_integers(
+    valid_environment, monkeypatch, name, value
+):
+    monkeypatch.setenv(f"DB_AGENT_{name}", value)
+
+    with pytest.raises(ConfigurationError) as exc:
+        load_settings()
+
+    assert str(exc.value) == f"配置缺失或无效：DB_AGENT_{name}"
+
+
+@pytest.fixture
+def valid_database_environment(monkeypatch):
+    monkeypatch.setenv("DB_AGENT_MYSQL_PASSWORD", "synthetic-reader-password")
+
+
+def test_database_settings_do_not_require_model_configuration(valid_database_environment):
+    settings = load_database_settings()
+
+    assert settings.host == "127.0.0.1"
+    assert settings.port == 13306
+    assert settings.database == "db_agent"
+    assert settings.user == "db_agent_reader"
+    assert settings.password.get_secret_value() == "synthetic-reader-password"
+    assert settings.allowed_tables == ()
+    assert settings.connect_timeout_seconds == 3
+    assert settings.metadata_timeout_seconds == 5
+    assert settings.max_metadata_rows == 200
+    assert settings.max_metadata_bytes == 32768
+    assert "synthetic-reader-password" not in repr(settings)
+    assert "synthetic-reader-password" not in settings.model_dump_json()
+
+
+def test_database_root_password_is_never_a_reader_password_fallback(monkeypatch):
+    monkeypatch.setenv("DB_AGENT_MYSQL_ROOT_PASSWORD", "synthetic-root-secret")
+
+    with pytest.raises(ConfigurationError) as exc:
+        load_database_settings()
+
+    assert str(exc.value) == "配置缺失或无效：DB_AGENT_MYSQL_PASSWORD"
+    assert "synthetic-root-secret" not in str(exc.value)
+
+
+def test_database_dotenv_takes_priority_with_environment_fallback(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text(
+        "DB_AGENT_MYSQL_PASSWORD=synthetic-dotenv-password\n"
+        "DB_AGENT_MYSQL_DATABASE=dotenv_db\n"
+        'DB_AGENT_MYSQL_ALLOWED_TABLES=["customers","orders","order_items"]\n'
+        "DB_AGENT_MYSQL_ROOT_PASSWORD=ignored-root-secret\n"
+        "DB_AGENT_MODEL=ignored-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DB_AGENT_MYSQL_PASSWORD", "synthetic-env-password")
+    monkeypatch.setenv("DB_AGENT_MYSQL_DATABASE", "env_db")
+    monkeypatch.setenv("DB_AGENT_MYSQL_HOST", "mysql.example.test")
+    monkeypatch.setenv("DB_AGENT_MYSQL_ALLOWED_TABLES", '["env_table"]')
+
+    settings = load_database_settings()
+
+    assert settings.password.get_secret_value() == "synthetic-dotenv-password"
+    assert settings.database == "dotenv_db"
+    assert settings.host == "mysql.example.test"
+    assert settings.allowed_tables == ("customers", "orders", "order_items")
+    assert not hasattr(settings, "root_password")
+    assert "ignored-root-secret" not in repr(settings)
+
+
+def test_database_password_preserves_significant_whitespace(monkeypatch):
+    monkeypatch.setenv("DB_AGENT_MYSQL_PASSWORD", " synthetic-password ")
+
+    assert load_database_settings().password.get_secret_value() == " synthetic-password "
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("HOST", ""),
+        ("HOST", "   "),
+        ("PORT", "0"),
+        ("PORT", "65536"),
+        ("PORT", "1.5"),
+        ("PASSWORD", ""),
+        ("PASSWORD", "   "),
+        ("USER", ""),
+        ("USER", "root"),
+        ("USER", " ROOT "),
+        ("DATABASE", ""),
+        ("DATABASE", "1invalid"),
+        ("DATABASE", "has-hyphen"),
+        ("DATABASE", "has.dot"),
+        ("DATABASE", "with space"),
+        ("DATABASE", "数据库"),
+        ("DATABASE", "a" * 65),
+        ("DATABASE", "mysql"),
+        ("DATABASE", "INFORMATION_SCHEMA"),
+        ("DATABASE", "performance_schema"),
+        ("DATABASE", "sys"),
+        ("CONNECT_TIMEOUT_SECONDS", "0.5"),
+        ("CONNECT_TIMEOUT_SECONDS", "31"),
+        ("CONNECT_TIMEOUT_SECONDS", "NaN"),
+        ("CONNECT_TIMEOUT_SECONDS", "Infinity"),
+        ("METADATA_TIMEOUT_SECONDS", "0"),
+        ("METADATA_TIMEOUT_SECONDS", "61"),
+        ("METADATA_TIMEOUT_SECONDS", "NaN"),
+        ("METADATA_TIMEOUT_SECONDS", "Infinity"),
+        ("MAX_METADATA_ROWS", "0"),
+        ("MAX_METADATA_ROWS", "1001"),
+        ("MAX_METADATA_ROWS", "1.5"),
+        ("MAX_METADATA_BYTES", "1023"),
+        ("MAX_METADATA_BYTES", "131073"),
+        ("MAX_METADATA_BYTES", "1024.5"),
+    ],
+)
+def test_invalid_database_configuration_reports_only_field_names(
+    valid_database_environment, monkeypatch, name, value
+):
+    monkeypatch.setenv(f"DB_AGENT_MYSQL_{name}", value)
+
+    with pytest.raises(ConfigurationError) as exc:
+        load_database_settings()
+
+    assert str(exc.value) == f"配置缺失或无效：DB_AGENT_MYSQL_{name}"
+    assert "synthetic-reader-password" not in "".join(traceback.format_exception(exc.value))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "orders",
+        '"orders"',
+        "null",
+        '{"orders": true}',
+        '["secret-marker]',
+        '["orders", 1]',
+        '["orders", null]',
+        '["1invalid"]',
+        '["with-hyphen"]',
+        '["db.table"]',
+        '["with space"]',
+        '["`quoted`"]',
+        '["中文"]',
+        '[""]',
+        json.dumps(["a" * 65]),
+        json.dumps([f"table_{index}" for index in range(101)]),
+    ],
+)
+def test_allowed_tables_require_a_bounded_json_array_of_identifiers(
+    valid_database_environment, monkeypatch, value
+):
+    monkeypatch.setenv("DB_AGENT_MYSQL_ALLOWED_TABLES", value)
+
+    with pytest.raises(ConfigurationError) as exc:
+        load_database_settings()
+
+    assert str(exc.value) == "配置缺失或无效：DB_AGENT_MYSQL_ALLOWED_TABLES"
+    rendered_error = "".join(traceback.format_exception(exc.value))
+    assert "secret-marker" not in rendered_error
+    assert "synthetic-reader-password" not in rendered_error
+    assert "ValidationError" not in rendered_error
+
+
+def test_database_configuration_accepts_supported_boundary_values(
+    valid_database_environment, monkeypatch
+):
+    table_names = ["_" + "a" * 63, *[f"table_{index}" for index in range(99)]]
+    monkeypatch.setenv("DB_AGENT_MYSQL_DATABASE", "_" + "a" * 63)
+    monkeypatch.setenv("DB_AGENT_MYSQL_ALLOWED_TABLES", json.dumps(table_names))
+    monkeypatch.setenv("DB_AGENT_MYSQL_CONNECT_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("DB_AGENT_MYSQL_METADATA_TIMEOUT_SECONDS", "0.1")
+    monkeypatch.setenv("DB_AGENT_MYSQL_MAX_METADATA_ROWS", "1")
+    monkeypatch.setenv("DB_AGENT_MYSQL_MAX_METADATA_BYTES", "1024")
+
+    settings = load_database_settings()
+
+    assert settings.allowed_tables == tuple(table_names)
+    assert len(settings.database) == 64
+    assert settings.connect_timeout_seconds == 1
+    assert settings.metadata_timeout_seconds == 0.1
+    assert settings.max_metadata_rows == 1
+    assert settings.max_metadata_bytes == 1024
