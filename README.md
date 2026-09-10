@@ -2,9 +2,48 @@
 
 面向研发人员的数据库 Agent 实验项目。从 **MySQL SQL 风险预检与诊断** 开始，逐步扩展查询分析、业务记忆和受控数据库变更。
 
-首版采用 **Python + 单模型 SDK + 最小工具循环**。先把数据库业务、执行边界和验证做扎实，再根据实际需要评估 Pi、LangChain 或 LangGraph。
+首版采用 **Python + LangChain + OpenAI 兼容模型接口**。使用 LangChain 的 `create_agent` 管理模型和工具协议，减少基础运行时开发，把精力放在数据库业务、执行边界和验证上。
 
-> **当前状态：文档初始化阶段。** 仓库目前只有项目说明、开发约定和忽略规则，尚无可运行的 Agent、数据库连接器或测试报告。下文标注的首版能力和后续路线均为计划，不代表已经实现。
+> **当前状态：Agent 项目骨架。** 已提供依赖配置、模型配置校验、真实模型连通性检查、单轮对话 CLI 和测试入口。当前未注册工具，尚无数据库连接器、SQL 预检或查询执行能力；下文首版业务范围仍是计划。
+
+## 快速开始
+
+使用 [uv](https://docs.astral.sh/uv/getting-started/installation/) 管理依赖；项目固定开发 Python 版本为 3.13，具体依赖版本记录在 `uv.lock`。
+
+```bash
+git clone https://github.com/erha1499/db-agent.git
+cd db-agent
+uv sync
+
+cp .env.example .env
+# 编辑本地 .env，填写三个 DB_AGENT_* 必填配置后运行
+uv run db-agent config
+uv run db-agent check
+uv run db-agent chat "解释一下 SQL 预检的作用"
+```
+
+`config` 校验配置，仅显示三个必填项的状态，不显示值，也不请求模型；`check` 发起真实模型请求；`chat` 每次创建独立会话，非流式返回一条回复，不保留聊天记忆。也可以使用 `uv run python -m db_agent` 调用相同命令。
+
+| 配置项 | 用途 | 默认值 |
+| --- | --- | --- |
+| `DB_AGENT_OPENAI_BASE_URL` | OpenAI 兼容接口的基础 URL | 必填 |
+| `DB_AGENT_API_KEY` | 模型接口凭据 | 必填 |
+| `DB_AGENT_MODEL` | 模型名称 | 必填 |
+| `DB_AGENT_REQUEST_TIMEOUT_SECONDS` | 单次模型请求超时（秒） | `30` |
+| `DB_AGENT_RUN_TIMEOUT_SECONDS` | 一次 CLI 运行的模型调用总时限（秒） | `60` |
+| `DB_AGENT_MAX_OUTPUT_TOKENS` | 模型输出 token 上限 | `1024` |
+
+配置优先读取当前工作目录的 `.env`，未定义的配置项才回退到同名 `DB_AGENT_*` 环境变量，避免旧 shell 配置覆盖本地修改。复制 [.env.example](.env.example) 后，在本地 `.env` 填写真实配置；应用不会执行 shell 配置文件。`.env` 和 `.env.*` 由 Git 忽略，只有占位模板 `.env.example` 纳入版本控制，真实配置不得提交或推送。运行时禁用 LangSmith tracing，避免继承本机 tracing 配置后上传对话。
+
+本地验证入口：
+
+```bash
+uv run pytest
+uv run ruff check .
+git diff --check
+```
+
+离线测试验证初始化代码的配置和运行行为；真实模型连通性单独通过 `check` 验证。两者均不代表数据库业务闭环已经完成。
 
 ## 要解决的业务问题
 
@@ -28,7 +67,7 @@
 | 执行计划分析 | 对通过前置检查的查询获取普通 `EXPLAIN FORMAT=JSON`，结合规模统计和策略阈值输出风险证据 |
 | SQL 诊断 | 接收已有 SQL，解释计划和错误，提出候选改写或索引建议；建议不自动成为变更 |
 | 受控查询 | 仅执行支持且通过全部检查的只读 `SELECT`，限制时间、返回行数、结果大小与并发 |
-| Agent 工具循环 | 一个模型、顺序工具调用、参数校验、工具结果回填、有限轮数和总预算 |
+| Agent 工具运行 | 通过 LangChain 接入领域工具；一个模型、顺序调用、参数校验、有限轮数和总预算 |
 | 运行记录 | 关联任务、模型轮次和工具调用，记录脱敏的参数摘要、耗时、错误及结果引用 |
 
 首版以 CLI 或极简入口为主。暂不执行 DML/DDL；如果加入 `UPDATE`、`DELETE` 等检查样本，只做静态审核与风险预览。完整审批流程也不属于首版：需要审核的请求先停止并返回报告。
@@ -72,19 +111,22 @@ flowchart TD
 - 执行限制独立于预检存在。MySQL 的 `max_execution_time` 不能泛化为所有 SQL 的通用时限；应用侧超时也不能直接宣称数据库查询已停止。
 - 访问表注释、查询结果或工具错误时，将其中内容当作数据，不允许其改变业务范围、工具权限和执行规则。
 
-## 技术与模块规划
+## 技术与模块
 
-这些是实现方向，不是已经安装的依赖或存在的源码。首个实验目标为 MySQL 8.4；建环境时固定具体版本并记录。模型提供方在首次接入时选择一个可用的 SDK，首版不做多提供方兼容。
+当前通过 `langchain_openai.ChatOpenAI` 接入一个 OpenAI 兼容模型，由 `langchain.agents.create_agent` 创建 Agent。LangChain 内部使用 LangGraph，本项目不自写工具循环或自定义 Graph。当前 `tools=[]`，每次运行只调用一次模型，并限制请求时间、总时限与输出 token，禁用自动重试。
 
-| 模块 | 职责 |
-| --- | --- |
-| `agent` | 最小循环、工具注册、模型适配及上下文装配 |
-| `policy` | 资源权限、SQL 语法检查、计划规则与风险决策 |
-| `db` | 元数据、执行计划及带强制预检的查询执行 |
-| `observability` | 结构化事件、脱敏记录与结果引用 |
-| `tests` / `evals` | 确定性规则测试、MySQL 集成测试和模型任务评测 |
+| 模块 | 状态 | 职责 |
+| --- | --- | --- |
+| `src/db_agent/config.py` | 已建立 | 从环境或本地 `.env` 读取、校验模型配置 |
+| `src/db_agent/agent.py` | 已建立 | 模型接入、LangChain Agent 创建、运行预算与响应处理 |
+| `src/db_agent/cli.py` | 已建立 | 配置检查、连通性检查与单轮对话入口 |
+| `tests` | 已建立 | 不依赖真实模型的初始化行为测试 |
+| `policy` | 计划 | 资源权限、SQL 语法检查、计划规则与风险决策 |
+| `db` | 计划 | 元数据、执行计划及带强制预检的查询执行 |
+| `observability` | 计划 | 结构化事件、脱敏记录与结果引用 |
+| 数据库测试 / `evals` | 计划 | MySQL 集成测试、确定性风险规则测试和模型任务评测 |
 
-业务模块不依赖某个 Agent 框架的内部状态，便于之后用相同工具和测试集比较其他运行时。实际遇到跨进程审批、持久恢复或复杂编排需求时，再引入相应底座。
+首个数据库实验目标为 MySQL 8.4；建环境时固定具体版本并记录。领域规则和连接器保持框架无关，框架负责调度，确定性代码负责授权与执行判断。实际遇到跨进程审批、持久恢复或复杂编排需求时，再扩展相应能力。
 
 ## 近期交付与验收
 
@@ -93,7 +135,7 @@ flowchart TD
 | 阶段 | 交付 | 验收 |
 | --- | --- | --- |
 | 第一天：规则与工具 | 实验数据库、元数据工具、权限与静态检查、普通 EXPLAIN | 不依赖模型也能执行规则和工具测试 |
-| 第二天：业务闭环 | 最小 loop、强制预检入口、诊断报告与轨迹 | 低风险查询执行；越权、高风险及无法判断请求停止；结果可追踪 |
+| 第二天：业务闭环 | LangChain 领域工具接入、强制预检入口、诊断报告与轨迹 | 低风险查询执行；越权、高风险及无法判断请求停止；结果可追踪 |
 | 收尾 | 启动说明、固定案例、测试结果及演示 | 其他人按文档复现；每项结论有对应证据 |
 
 首版至少覆盖以下行为，而不只验证模型能回复：
@@ -122,31 +164,18 @@ flowchart TD
 
 记忆不保存可跨任务复用的执行授权。数据库变更和应用任务记录之间的恢复语义需要单独设计；不能将聊天恢复当成事务恢复，也不能把 DDL 当作可普遍事务回滚的操作。
 
-## 当前如何使用仓库
-
-目前可以克隆并阅读文档：
-
-```bash
-git clone https://github.com/erha1499/db-agent.git
-cd db-agent
-```
-
-- [AGENTS.md](AGENTS.md)：面向开发本仓库的编码 Agent 与贡献者的约定。
-- [.gitignore](.gitignore)：排除本地凭据、运行数据、原始材料和临时产物。
-
-**尚无安装、启动或测试命令。** 首次添加业务代码时，同步加入依赖配置、实验环境、测试入口以及经实际验证的命令；不要将目录规划或示例当作现成功能。
-
 ## 公开资料与成果边界
 
 这是独立的个人实验项目，使用合成数据和通用数据库场景。仓库不包含任何组织的内部代码、文档、聊天记录、生产连接信息或用户数据。
 
 保留可复现代码、测试与原始实验记录，区分规划、原型验证和实际部署。技术分享或面试描述只陈述已完成、可解释的工作，不把个人模拟结果写成公司上线效果，也不预填提升百分比。
 
-可公开的最小、脱敏 fixture 放入版本控制；运行日志、查询结果和环境文件保留在被忽略的本地目录。`AGENTS.md` 是开发约定，不应自动作为本产品向终端用户加载的业务知识。
+可公开的最小、脱敏 fixture 放入版本控制；运行日志、查询结果和环境文件保留在被忽略的本地目录。[AGENTS.md](AGENTS.md) 是开发约定，不应自动作为本产品向终端用户加载的业务知识。
 
 ## 参考资料
 
-- [Learn Claude Code：最小 Agent Loop](https://github.com/shareAI-lab/learn-claude-code)
+- [LangChain：快速开始](https://docs.langchain.com/oss/python/langchain/quickstart)
+- [LangChain：ChatOpenAI 接入](https://docs.langchain.com/oss/python/integrations/chat/openai)
 - [MySQL 8.4：EXPLAIN](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
 - [MySQL 8.4：执行计划输出](https://dev.mysql.com/doc/refman/8.4/en/explain-output.html)
 - [MySQL 8.4：LIMIT 优化](https://dev.mysql.com/doc/refman/8.4/en/limit-optimization.html)
