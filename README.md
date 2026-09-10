@@ -4,7 +4,7 @@
 
 首版采用 **Python + LangChain + OpenAI 兼容模型接口**。使用 LangChain 的 `create_agent` 管理模型和工具协议，减少基础运行时开发，把精力放在数据库业务、执行边界和验证上。
 
-> **当前状态：模型接入与 CLI 已实现。** 已提供依赖配置、模型配置校验、真实模型连通性检查、单轮对话 CLI 和测试入口。当前未注册工具，尚无数据库连接器、SQL 预检或查询执行能力；下文首版业务范围仍是计划。
+> **当前状态：模型接入与 CLI 已实现，已提供本地 MySQL 配置。** 已提供依赖配置、模型配置校验、真实模型连通性检查、单轮对话 CLI、测试入口和 MySQL 启动配置。Agent 当前未注册工具，尚无数据库连接器、SQL 预检或查询执行能力；下文首版业务范围仍是计划。
 
 ## 快速开始
 
@@ -33,7 +33,7 @@ uv run db-agent chat "解释一下 SQL 预检的作用"
 | `DB_AGENT_RUN_TIMEOUT_SECONDS` | 一次 CLI 运行的模型调用总时限（秒） | `60` |
 | `DB_AGENT_MAX_OUTPUT_TOKENS` | 模型输出 token 上限 | `1024` |
 
-配置优先读取当前工作目录的 `.env`，未定义的配置项才回退到同名 `DB_AGENT_*` 环境变量，避免旧 shell 配置覆盖本地修改。复制 [.env.example](.env.example) 后，在本地 `.env` 填写真实配置；应用不会执行 shell 配置文件。`.env` 和 `.env.*` 由 Git 忽略，只有占位模板 `.env.example` 纳入版本控制，真实配置不得提交或推送。运行时禁用 LangSmith tracing，避免继承本机 tracing 配置后上传对话。
+模型配置优先读取当前工作目录的 `.env`，未定义的配置项才回退到同名 `DB_AGENT_*` 环境变量，避免旧 shell 配置覆盖本地修改。复制 [.env.example](.env.example) 后，在本地 `.env` 填写真实配置；应用不会执行 shell 配置文件。`.env` 和 `.env.*` 由 Git 忽略，只有占位模板 `.env.example` 纳入版本控制，真实配置不得提交或推送。运行时禁用 LangSmith tracing，避免继承本机 tracing 配置后上传对话。
 
 本地验证入口：
 
@@ -44,6 +44,46 @@ git diff --check
 ```
 
 离线测试验证初始化代码的配置和运行行为；真实模型连通性单独通过 `check` 验证。两者均不代表数据库业务闭环已经完成。
+
+## 本地 MySQL
+
+[compose.yaml](compose.yaml) 提供 MySQL 8.4.11 本地实例，使用 Docker Compose 项目 `db-agent` 和服务 `mysql`。先启动 OrbStack 或其他 Docker 运行环境，在现有 `.env` 中填写两个独立的数据库密码，再从仓库根目录运行：
+
+```bash
+docker compose up -d --wait
+docker compose ps
+```
+
+| 配置项 | 本地值或要求 |
+| --- | --- |
+| `DB_AGENT_MYSQL_HOST` | `127.0.0.1` |
+| `DB_AGENT_MYSQL_PORT` | `13306`；映射到容器 `3306` |
+| `DB_AGENT_MYSQL_DATABASE` | `db_agent` |
+| `DB_AGENT_MYSQL_USER` | `db_agent_reader` |
+| `DB_AGENT_MYSQL_PASSWORD` | 在 `.env` 设置；24–128 位字母、数字、`_` 或 `-` |
+| `DB_AGENT_MYSQL_ROOT_PASSWORD` | 在 `.env` 单独设置，仅用于本地管理 |
+
+服务只绑定本机 `127.0.0.1`，默认容器名为 `db-agent-mysql-1`，数据保存在命名卷 `db-agent_mysql_data`。首次初始化创建 `db_agent` 数据库，并仅为 `db_agent_reader` 授予该数据库的 `SELECT` 和 `SHOW VIEW` 权限。主机、数据库名和用户名配置用于记录连接信息；修改这些值不会改变 Compose 的固定绑定或初始化对象。
+
+宿主机的数据库客户端使用上表连接信息，密码取自本地 `.env`。已安装 MySQL CLI 时可交互输入密码连接：
+
+```bash
+mysql --protocol=TCP --host=127.0.0.1 --port=13306 --user=db_agent_reader --password db_agent
+```
+
+root 仅用于容器内本地 socket 管理，执行以下命令后交互输入 root 密码：
+
+```bash
+docker compose exec mysql mysql -uroot -p
+```
+
+停止服务并保留数据：
+
+```bash
+docker compose stop mysql
+```
+
+账号与密码只在空数据卷首次启动时初始化。已有数据卷后修改 `.env` 不会自动修改数据库密码；需要通过 SQL 修改对应账号密码，再同步本地配置。数据库配置当前供 Compose 环境和外部客户端使用，Agent 连接器与数据库工具尚未接入；本地实例配置不代表生产部署或数据库业务验收完成。
 
 ## 要解决的业务问题
 
@@ -121,12 +161,13 @@ flowchart TD
 | `src/db_agent/agent.py` | 已建立 | 模型接入、LangChain Agent 创建、运行预算与响应处理 |
 | `src/db_agent/cli.py` | 已建立 | 配置检查、连通性检查与单轮对话入口 |
 | `tests` | 已建立 | 不依赖真实模型的初始化行为测试 |
+| `compose.yaml` / `infra/mysql/init` | 已建立 | 本地 MySQL、持久化数据卷及只读账号初始化 |
 | `policy` | 计划 | 资源权限、SQL 语法检查、计划规则与风险决策 |
 | `db` | 计划 | 元数据、执行计划及带强制预检的查询执行 |
 | `observability` | 计划 | 结构化事件、脱敏记录与结果引用 |
 | 数据库测试 / `evals` | 计划 | MySQL 集成测试、确定性风险规则测试和模型任务评测 |
 
-首个数据库支持目标为 MySQL 8.4；接入时固定具体版本并记录，先在隔离测试环境验证连接、权限、预检和执行限制。领域规则和连接器保持框架无关，框架负责调度，确定性代码负责授权与执行判断。实际遇到跨进程审批、持久恢复或复杂编排需求时，再扩展相应能力。
+当前本地 MySQL 配置使用 8.4.11，镜像引用以 `compose.yaml` 为准；Agent 接入后需在隔离测试环境验证连接、权限、预检和执行限制。领域规则和连接器保持框架无关，框架负责调度，确定性代码负责授权与执行判断。实际遇到跨进程审批、持久恢复或复杂编排需求时，再扩展相应能力。
 
 ## 近期交付与验收
 

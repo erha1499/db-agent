@@ -7,7 +7,7 @@
 - 先读 `README.md`，核对 Git 状态和实际文件。README 的路线图不代表功能已经存在。
 - 面向实际数据库工作流程，主要业务是数据库查询、SQL 风险预检与诊断，后续逐步扩展 Data Agent、业务记忆和受控变更。
 - 近期目标：Python、LangChain、单个 OpenAI 兼容模型和明确授权的 MySQL 数据源，分阶段完成可实际使用的 SQL 预检与诊断闭环；先在隔离测试环境验证。
-- 当前已建立 Python 项目结构、配置校验、模型连通性检查、单轮对话 CLI、pytest 和 Ruff 入口；未接入数据库工具，SQL 预检与查询执行仍待实现。开发使用 Python 3.13 和 `uv sync`，依赖版本以 `uv.lock` 为准。
+- 当前已建立 Python 项目结构、配置校验、模型连通性检查、单轮对话 CLI、pytest 和 Ruff 入口，并提供本地 MySQL Compose 配置；Agent 连接器和数据库工具尚未接入，SQL 预检与查询执行仍待实现。开发使用 Python 3.13 和 `uv sync`，依赖版本以 `uv.lock` 为准。
 - 使用 `langchain.agents.create_agent` 与 `langchain_openai.ChatOpenAI`，复用框架的模型与工具协议，不自写 harness 或自定义 Graph。LangGraph 是框架内部依赖；近期不扩展多 Agent、分布式编排、完整观测平台或通用记忆系统。
 - 每个阶段优先完成一条受控业务闭环和验收证据，再扩大功能范围。按目标环境核对版本、权限、运行限制与业务结果，不能用假工具、预制回答或伪造测试结果冒充可运行功能。
 
@@ -19,6 +19,14 @@
 4. 并行任务应边界独立、尽量不改同一文件；整合者检查最终结果。不要覆盖用户已有修改。
 5. 缺少模型凭据或数据库环境时，继续不依赖它们的规则测试，并明确哪些集成验证未运行。不要读取任意本地文件寻找秘密。
 6. 提交前检查 diff、跟踪文件和验证输出；对外推送遵循当前任务的授权。不得把公开仓库初始化理解为持续发布任意后续内容的授权。
+
+## 本地数据库
+
+- 使用 `compose.yaml` 中的 MySQL 8.4.11，项目名 `db-agent`、服务名 `mysql`，默认绑定 `127.0.0.1:13306`，命名卷 `db-agent_mysql_data` 保存数据。这是本地环境配置，不是生产部署声明。
+- 启动使用 `docker compose up -d --wait`，状态使用 `docker compose ps`，停止并保留数据使用 `docker compose stop mysql`。未经明确授权不得删除数据卷。
+- `db_agent_reader` 仅有 `db_agent` 数据库的 `SELECT` 与 `SHOW VIEW` 权限。root 仅通过容器内本地 socket 管理，入口为 `docker compose exec mysql mysql -uroot -p`；不能把 root 凭据用于 Agent。
+- `DB_AGENT_MYSQL_*` 当前供本地环境和外部客户端使用，不代表 Agent 已读取或接入数据库。真实密码只放 `.env`，reader 密码限定为 24–128 位字母、数字、`_` 或 `-`；模板密码留空。
+- 初始化只对空数据卷生效。已有数据卷后修改 `.env` 不会修改数据库内密码；需要通过 SQL 修改对应账号密码，再同步本地配置，不以删除数据卷代替改密。
 
 ## 架构边界
 
