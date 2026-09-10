@@ -15,6 +15,7 @@ dependencies = [
     "langsmith>=0.4,<1",
     "pydantic-settings>=2.15,<3",
     "pymysql>=1.2.0",
+    "sqlglot>=30,<31",
 ]
 
 [project.scripts]

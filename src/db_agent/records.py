@@ -25,6 +25,11 @@ class RunRecord:
         operation: str | None = None,
         call_id: str | None = None,
         duration_ms: int | None = None,
+        report_id: str | None = None,
+        decision: str | None = None,
+        policy_version: str | None = None,
+        sql_fingerprint: str | None = None,
+        rule_ids: list[str] | None = None,
     ) -> None:
         if self.failed:
             return
@@ -40,6 +45,11 @@ class RunRecord:
                     "operation": operation,
                     "call_id": call_id,
                     "duration_ms": duration_ms,
+                    "report_id": report_id,
+                    "decision": decision,
+                    "policy_version": policy_version,
+                    "sql_fingerprint": sql_fingerprint,
+                    "rule_ids": rule_ids,
                 }.items()
                 if value is not None
             },

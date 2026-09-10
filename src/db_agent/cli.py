@@ -7,7 +7,13 @@ import sys
 import time
 
 from db_agent.agent import AgentResponseError, run_agent
-from db_agent.config import ConfigurationError, load_database_settings, load_settings
+from db_agent.analysis import SqlAnalysisService
+from db_agent.config import (
+    ConfigurationError,
+    load_analysis_settings,
+    load_database_settings,
+    load_settings,
+)
 from db_agent.db import DatabaseError, MetadataConnector
 from db_agent.records import RunRecord
 
@@ -20,6 +26,10 @@ async def run_database_command(args, connector: MetadataConnector, record: RunRe
             result = await connector.check()
         elif args.db_command == "tables":
             result = await connector.list_tables()
+        elif args.db_command == "analyze":
+            result = await SqlAnalysisService(connector, args.analysis_settings, record).analyze(
+                args.sql
+            )
         else:
             result = await connector.describe_table(args.table)
         code, status = None, "ok"
@@ -42,20 +52,32 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("config", help="校验配置，仅显示配置状态")
     commands.add_parser("check", help="调用一次模型，检查连通性")
-    chat = commands.add_parser("chat", help="进行一次带数据库元数据工具的独立问答")
+    chat = commands.add_parser("chat", help="进行一次带元数据和 SQL 诊断工具的独立问答")
     chat.add_argument("prompt", help="问题或需要解释的 SQL")
-    db = commands.add_parser("db", help="直接检查数据库或读取元数据，不调用模型")
+    db = commands.add_parser("db", help="直接检查数据库、读取元数据或预检 SQL，不调用模型")
     db_commands = db.add_subparsers(dest="db_command", required=True)
     db_commands.add_parser("check", help="检查只读数据库连接")
     db_commands.add_parser("tables", help="列出授权的业务表")
     describe = db_commands.add_parser("describe", help="读取一张授权表的字段和索引")
     describe.add_argument("table", help="单个表名")
+    analyze = db_commands.add_parser("analyze", help="SQL 静态预检与普通 EXPLAIN 诊断")
+    source = analyze.add_mutually_exclusive_group(required=True)
+    source.add_argument("sql", nargs="?", help="一条完整 SQL；含敏感字面值时建议使用 --stdin")
+    source.add_argument("--stdin", action="store_true", help="从标准输入读取受长度限制的 UTF-8 SQL")
     args = parser.parse_args(argv)
     if args.command == "chat" and not args.prompt.strip():
         parser.error("问题不能为空")
 
     try:
         if args.command == "db":
+            if args.db_command == "analyze":
+                args.analysis_settings = load_analysis_settings()
+                if args.stdin:
+                    try:
+                        raw = sys.stdin.buffer.read(args.analysis_settings.max_sql_bytes + 1)
+                        args.sql = raw.decode("utf-8")
+                    except (OSError, UnicodeError):
+                        raise ConfigurationError("无法读取 UTF-8 SQL 标准输入。") from None
             connector = MetadataConnector(load_database_settings())
             with RunRecord() as record:
                 result = asyncio.run(run_database_command(args, connector, record))
@@ -70,8 +92,9 @@ def main(argv: list[str] | None = None) -> int:
             "这是模型连通性检查，请仅回复 DB_AGENT_OK。" if args.command == "check" else args.prompt
         )
         connector = MetadataConnector(load_database_settings()) if args.command == "chat" else None
+        analysis_settings = load_analysis_settings() if connector else None
         with RunRecord() as record:
-            answer = asyncio.run(run_agent(prompt, settings, connector, record))
+            answer = asyncio.run(run_agent(prompt, settings, connector, record, analysis_settings))
             if args.command == "check":
                 if answer != "DB_AGENT_OK":
                     raise AgentResponseError("模型已响应，但未返回预期的连通性确认文本")

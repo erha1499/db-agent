@@ -109,6 +109,7 @@ def test_chat_uses_project_endpoint_credentials_and_budgets(stub_server, capsys)
     assert {tool["function"]["name"] for tool in body["tools"]} == {
         "list_tables",
         "describe_table",
+        "analyze_sql",
     }
     assert body["messages"][-1] == {"role": "user", "content": "解释 SELECT 1 的含义"}
     assert TEST_KEY not in json.dumps(body)
@@ -250,7 +251,7 @@ def test_tool_result_is_returned_to_model_with_call_id(stub_server, monkeypatch,
     assert "synthetic_column" in tool_message["content"]
     assert "synthetic-reader-secret" not in json.dumps(requests)
     schemas = json.dumps(requests[0]["body"]["tools"])
-    for field in ('"host"', '"database"', '"role"', '"password"', '"sql"'):
+    for field in ('"host"', '"database"', '"role"', '"password"'):
         assert field not in schemas
     logs = list((tmp_path / "outputs/runs").glob("*.jsonl"))
     assert len(logs) == 1
@@ -449,3 +450,89 @@ def test_total_timeout_cancels_tool_and_closes_database(stub_server, monkeypatch
     assert tool_event["code"] == "CANCELLED"
     assert events[-1]["status"] == "error"
     assert events[-1]["code"] == "TimeoutError"
+
+
+def test_sql_block_is_business_result_returned_to_main_model(
+    stub_server, monkeypatch, capsys, tmp_path
+):
+    from db_agent import db
+
+    async def connect(**kwargs):
+        raise AssertionError("blocked SQL must not connect")
+
+    monkeypatch.setattr(db.aiomysql, "connect", connect)
+    stub_server["responses"] = [
+        tool_completion(("analyze_sql", {"sql": "DELETE FROM orders WHERE id = 987654321"})),
+        completion("预检拒绝了写操作，未执行 SQL。"),
+    ]
+    assert main(["chat", "分析删除订单语句"]) == 0
+    assert len(stub_server["requests"]) == 2  # No nested LLM inside analyze_sql.
+    message = stub_server["requests"][1]["body"]["messages"][-1]
+    report = json.loads(message["content"])
+    assert message["tool_call_id"] == "synthetic-call-0"
+    assert report["decision"] == "BLOCK"
+    assert report["evidence_source"] == "static_only"
+    assert report["plan_summary"] is None
+    assert "987654321" not in message["content"]
+    events = [
+        json.loads(line)
+        for path in (tmp_path / "outputs/runs").glob("*.jsonl")
+        for line in path.read_text().splitlines()
+    ]
+    event = next(e for e in events if e["event"] == "analysis_finished")
+    assert event["decision"] == "BLOCK"
+    assert event["report_id"] == report["report_id"]
+    assert event["rule_ids"]
+    assert "987654321" not in json.dumps(events)
+    assert next(e for e in events if e["event"] == "tool_finished")["status"] == "ok"
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"sql": "SELECT 1", "database": "mysql"},
+        {"sql": 123},
+        {"sql": "SELECT 1", "approved": True},
+    ],
+)
+def test_sql_tool_rejects_model_supplied_scope_or_approval(
+    stub_server, monkeypatch, capsys, arguments
+):
+    from db_agent.analysis import SqlAnalysisService
+
+    async def analyze(self, sql):
+        pytest.fail("invalid arguments reached service")
+
+    monkeypatch.setattr(SqlAnalysisService, "analyze", analyze)
+    stub_server["responses"] = [
+        tool_completion(("analyze_sql", arguments)),
+        completion("参数无效。"),
+    ]
+    assert main(["chat", "分析 SQL"]) == 0
+    message = stub_server["requests"][1]["body"]["messages"][-1]
+    assert "工具参数无效" in message["content"]
+    assert capsys.readouterr().err == ""
+
+
+def test_analysis_cli_without_model_credentials(stub_server, monkeypatch, capsys):
+    for name in ("DB_AGENT_API_KEY", "DB_AGENT_MODEL", "DB_AGENT_OPENAI_BASE_URL"):
+        monkeypatch.delenv(name)
+    assert main(["db", "analyze", "DELETE FROM orders"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "BLOCK"
+    assert stub_server["requests"] == []
+
+
+def test_analysis_cli_stdin_is_bounded(stub_server, monkeypatch, capsys):
+    import io
+    import sys
+
+    monkeypatch.setenv("DB_AGENT_ANALYSIS_MAX_SQL_BYTES", "64")
+    buffer = io.BytesIO(b"SELECT '" + b"x" * 100000 + b"'")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(buffer))
+    assert main(["db", "analyze", "--stdin"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["decision"] == "UNKNOWN"
+    assert buffer.tell() == 65
+    assert stub_server["requests"] == []

@@ -11,7 +11,8 @@ from contextlib import asynccontextmanager
 import aiomysql
 import pytest
 
-from db_agent.config import load_database_settings
+from db_agent.analysis import SqlAnalysisService
+from db_agent.config import AnalysisSettings, load_database_settings
 from db_agent.db import DatabaseError, MetadataConnector
 
 pytestmark = pytest.mark.skipif(
@@ -176,3 +177,91 @@ def test_reader_database_privileges_deny_insert(database_settings):
     code = asyncio.run(_denied_statement_error_number(database_settings, query))
 
     assert code == 1142, "reader must not have INSERT permission on orders"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT id, customer_id FROM orders ORDER BY created_at LIMIT 10",
+        "SELECT o.id, c.id FROM orders AS o INNER JOIN customers AS c ON o.customer_id = c.id",
+        "SELECT c.id, COUNT(o.id) FROM customers AS c LEFT JOIN orders AS o "
+        "ON c.id = o.customer_id GROUP BY c.id ORDER BY c.id",
+        "SELECT customer_id, SUM(total_amount) FROM orders GROUP BY customer_id",
+        "SELECT id FROM orders WHERE status LIKE '%paid%'",
+        "SELECT COUNT(*) FROM orders",
+        "SELECT id FROM orders WHERE 1 = 0",
+    ],
+)
+def test_real_supported_sql_produces_plan_evidence(database_settings, sql):
+    report = asyncio.run(
+        SqlAnalysisService(
+            MetadataConnector(database_settings),
+            AnalysisSettings(_env_file=None),
+        ).analyze(sql)
+    )
+    assert report["decision"] == "ALLOW", report["findings"]
+    assert report["evidence_source"] == "mysql_explain_json"
+    assert report["server_version"].startswith("8.4.")
+    assert report["plan_summary"] is not None
+
+
+def test_real_small_scan_can_trigger_configured_review_without_running_query(database_settings):
+    # Lower the policy threshold on the six-row fixture; this is not a large-load test.
+    limits = AnalysisSettings(_env_file=None, review_scan_rows=1)
+    report = asyncio.run(
+        SqlAnalysisService(MetadataConnector(database_settings), limits).analyze(
+            "SELECT id, total_amount FROM orders LIMIT 1"
+        )
+    )
+    assert report["decision"] == "REVIEW"
+    assert "PLAN_LARGE_SCAN" in {finding["rule_id"] for finding in report["findings"]}
+    tables = report["plan_summary"]["tables"]
+    assert tables[0]["rows_examined_per_scan"] > limits.review_scan_rows
+
+
+def test_real_secondary_index_can_cover_primary_key_projection(database_settings):
+    report = asyncio.run(SqlAnalysisService(
+        MetadataConnector(database_settings), AnalysisSettings(_env_file=None),
+    ).analyze("SELECT id, customer_id FROM orders ORDER BY created_at LIMIT 10"))
+    table = report["plan_summary"]["tables"][0]
+    assert table["using_index"] is True
+    assert table["key"] == "idx_orders_customer_created"
+    assert "PLAN_COVERING_INDEX" in {finding["rule_id"] for finding in report["findings"]}
+
+
+def test_real_invalid_column_is_unknown_and_raw_error_is_hidden(database_settings):
+    import json
+
+    report = asyncio.run(
+        SqlAnalysisService(
+            MetadataConnector(database_settings),
+            AnalysisSettings(_env_file=None),
+        ).analyze("SELECT private_missing_column_83e2 FROM orders")
+    )
+    assert report["decision"] == "UNKNOWN"
+    assert report["plan_summary"] is None
+    assert "SQL_REFERENCE_ERROR" in {finding["rule_id"] for finding in report["findings"]}
+    assert "private_missing_column_83e2" not in json.dumps(report)
+
+
+def test_real_literal_change_gets_fresh_plan_and_distinct_report(database_settings):
+    async def assess():
+        service = SqlAnalysisService(
+            MetadataConnector(database_settings),
+            AnalysisSettings(
+                _env_file=None,
+            ),
+        )
+        return [
+            await service.analyze(sql)
+            for sql in (
+                "SELECT id FROM orders WHERE id = 1001",
+                "SELECT id FROM orders WHERE id = 987654321",
+            )
+        ]
+
+    first, second = asyncio.run(assess())
+    assert first["report_id"] != second["report_id"]
+    assert first["sql_fingerprint"] == second["sql_fingerprint"]
+    assert first["evidence_source"] == second["evidence_source"] == "mysql_explain_json"
+    assert first["plan_summary"] != second["plan_summary"]

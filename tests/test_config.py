@@ -4,7 +4,12 @@ import traceback
 
 import pytest
 
-from db_agent.config import ConfigurationError, load_database_settings, load_settings
+from db_agent.config import (
+    ConfigurationError,
+    load_analysis_settings,
+    load_database_settings,
+    load_settings,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +39,38 @@ def test_missing_settings_reports_only_project_field_names():
     assert str(exc.value) == (
         "配置缺失或无效：DB_AGENT_API_KEY, DB_AGENT_MODEL, DB_AGENT_OPENAI_BASE_URL"
     )
+
+
+def test_analysis_settings_are_independent_and_dotenv_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("DB_AGENT_ANALYSIS_REVIEW_SCAN_ROWS", "300")
+    (tmp_path / ".env").write_text("DB_AGENT_ANALYSIS_REVIEW_SCAN_ROWS=250\n")
+    settings = load_analysis_settings()
+    assert settings.review_scan_rows == 250
+    assert settings.max_sql_bytes == 16384
+    assert settings.timeout_seconds == 10
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("MAX_SQL_BYTES", "65537"),
+        ("MAX_AST_NODES", "0"),
+        ("MAX_AST_DEPTH", "65"),
+        ("MAX_TABLES", "33"),
+        ("MAX_PLAN_BYTES", "262145"),
+        ("MAX_PLAN_NODES", "0"),
+        ("TIMEOUT_SECONDS", "nan"),
+        ("TIMEOUT_SECONDS", "inf"),
+        ("REVIEW_SCAN_ROWS", "0"),
+        ("REVIEW_JOIN_ROWS", "-1"),
+        ("REVIEW_SORT_ROWS", "private-invalid-value"),
+    ],
+)
+def test_analysis_settings_reject_invalid_budgets_without_echoing_values(monkeypatch, field, value):
+    monkeypatch.setenv(f"DB_AGENT_ANALYSIS_{field}", value)
+    with pytest.raises(ConfigurationError) as exc:
+        load_analysis_settings()
+    assert str(exc.value) == f"配置缺失或无效：DB_AGENT_ANALYSIS_{field}"
 
 
 def test_global_openai_settings_are_not_fallbacks(monkeypatch):

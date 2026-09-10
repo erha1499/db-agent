@@ -278,7 +278,7 @@ def test_byte_budget_includes_tool_json_serialization_whitespace(settings, drive
 @pytest.mark.parametrize(
     ("number", "code"),
     [(1045, "PERMISSION_DENIED"), (2003, "CONNECTION_ERROR"), (3024, "TIMEOUT"),
-     (1064, "DATABASE_ERROR")],
+     (1064, "SYNTAX_ERROR"), (1054, "SQL_REFERENCE_ERROR")],
 )
 def test_driver_errors_are_sanitized_and_close_connection(settings, driver, number, code):
     pending, _ = driver

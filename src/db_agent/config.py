@@ -145,6 +145,23 @@ class DatabaseSettings(_ProjectSettings):
         return value
 
 
+class AnalysisSettings(_ProjectSettings):
+    """Finite assessment budgets; these thresholds are policy, not runtime predictions."""
+
+    model_config = SettingsConfigDict(env_prefix="DB_AGENT_ANALYSIS_")
+
+    max_sql_bytes: int = Field(default=16384, ge=64, le=65536)
+    max_ast_nodes: int = Field(default=512, ge=1, le=2048)
+    max_ast_depth: int = Field(default=32, ge=1, le=64)
+    max_tables: int = Field(default=8, ge=1, le=32)
+    max_plan_bytes: int = Field(default=65536, ge=1024, le=262144)
+    max_plan_nodes: int = Field(default=256, ge=1, le=1024)
+    timeout_seconds: float = Field(default=10, gt=0, le=60, allow_inf_nan=False)
+    review_scan_rows: int = Field(default=100000, ge=1, le=1000000000)
+    review_join_rows: int = Field(default=1000000, ge=1, le=1000000000)
+    review_sort_rows: int = Field(default=100000, ge=1, le=1000000000)
+
+
 _SettingsT = TypeVar("_SettingsT", bound=_ProjectSettings)
 
 
@@ -173,3 +190,8 @@ def load_settings() -> Settings:
 def load_database_settings() -> DatabaseSettings:
     """Load only reader database settings; model configuration is not required."""
     return _load_settings(DatabaseSettings)
+
+
+def load_analysis_settings() -> AnalysisSettings:
+    """Load SQL assessment policy without requiring model credentials."""
+    return _load_settings(AnalysisSettings)

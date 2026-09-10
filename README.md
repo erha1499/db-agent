@@ -4,7 +4,7 @@
 
 首版采用 **Python + LangChain + OpenAI 兼容模型接口**。使用 LangChain 的 `create_agent` 管理模型和工具协议，减少基础运行时开发，把精力放在数据库业务、执行边界和验证上。
 
-> **当前状态：已接入 MySQL 连接器与元数据工具。** 已提供数据库连接检查；CLI 和 Agent 可以列出授权表、读取字段与索引，并保存最小运行记录。SQL 预检、`EXPLAIN` 和业务 `SELECT` 执行尚未实现；不能把结构读取当成查询风险或性能验证。
+> **当前状态：已提供 SQL 静态预检与普通 EXPLAIN 诊断。** CLI 和 Agent 可以读取授权表结构、预检完整 SQL、获取 MySQL 8.4 的真实计划并返回风险证据。主 Agent 根据报告解释原因并提出候选建议；业务 `SELECT` 执行、结果等价验证和数据库变更尚未实现。
 
 ## 快速开始
 
@@ -44,7 +44,7 @@ uv run ruff check .
 git diff --check
 ```
 
-离线测试验证配置、连接器边界与 Agent 运行行为；真实模型连通性单独通过 `check` 验证，数据库连接使用 `db check` 验证。各项检查分别提供证据，不代表尚未实现的 SQL 业务闭环已经完成。
+离线测试验证配置、静态规则、构造计划、连接器边界与 Agent 协议；真实模型连通性单独通过 `check` 验证，数据库连接使用 `db check` 验证。实际诊断链路使用下方 `db analyze` / `chat`，不同层次的验证不能互相替代。
 
 ## 本地 MySQL
 
@@ -63,7 +63,7 @@ docker compose ps
 | `DB_AGENT_MYSQL_USER` | `db_agent_reader` |
 | `DB_AGENT_MYSQL_PASSWORD` | 在 `.env` 设置；24–128 位字母、数字、`_` 或 `-` |
 | `DB_AGENT_MYSQL_ROOT_PASSWORD` | 在 `.env` 单独设置，仅用于本地管理 |
-| `DB_AGENT_MYSQL_ALLOWED_TABLES` | 允许 Agent 读取元数据的表名 JSON 数组，默认 `[]` |
+| `DB_AGENT_MYSQL_ALLOWED_TABLES` | 元数据与 SQL 分析允许访问的表名 JSON 数组，默认 `[]` |
 | `DB_AGENT_MYSQL_CONNECT_TIMEOUT_SECONDS` | 连接超时，默认 `3` 秒 |
 | `DB_AGENT_MYSQL_METADATA_TIMEOUT_SECONDS` | 单次元数据请求时限，默认 `5` 秒，包含连接器内排队、连接和读取 |
 | `DB_AGENT_MYSQL_MAX_METADATA_ROWS` | 单次元数据结果行数上限，默认 `200` |
@@ -114,7 +114,34 @@ uv run db-agent db describe orders
 uv run db-agent chat "查看 orders 的字段和索引，说明按 customer_id 和 created_at 查询时可考虑哪些索引。"
 ```
 
-三个 `db` 子命令不需要模型凭据；`chat` 需要模型与数据库配置，默认接入 `list_tables`、`describe_table`。白名单为空时不列出任何表，描述未授权表会被拒绝。当前仅支持基础表的表名、字段与索引，不返回表注释、默认值、外键元数据或业务行；模型根据字段名推断关系时必须说明尚未验证。
+`db` 子命令不需要模型凭据；`chat` 需要模型与数据库配置，接入 `list_tables`、`describe_table`、`analyze_sql`。白名单为空时不列出任何表，引用未授权表会被拒绝。元数据仅返回基础表的表名、字段与索引，不返回表注释、默认值、外键元数据或业务行；模型根据字段名推断关系时必须说明尚未验证。
+
+### SQL 预检与诊断
+
+```bash
+uv run db-agent db analyze 'SELECT id, customer_id FROM orders ORDER BY created_at LIMIT 10'
+uv run db-agent chat '分析 SELECT id, customer_id FROM orders ORDER BY created_at LIMIT 10；引用真实结构和计划，区分估算与建议，不做变更。'
+```
+
+直接 CLI 由业务代码完成检查与计划取证，返回 JSON；`chat` 由主模型选择工具，读取相同报告后解释问题与建议。`analyze_sql` 内部不调用 LLM；框架层只负责协议、工具白名单、顺序执行和预算，放行规则在领域代码和连接器中。
+
+含敏感字面值的 SQL 可以通过 `db analyze --stdin` 输入，避免写入命令参数或 shell 历史；输入为受长度限制的 UTF-8。直接 CLI 不向模型发送 SQL。`chat` 会把问题、工具调用以及脱敏计划摘要发送给配置的模型，因此只提交允许进入该模型上下文的内容。
+
+当前支持单条完整 `SELECT`、单表和带 `ON` 的显式 `INNER` / `LEFT JOIN`、基础比较与算术、分组、排序、`LIMIT`，以及 `COUNT` / `SUM` / `AVG` / `MIN` / `MAX`。函数名必须紧接左括号，不能加反引号或数据库限定。CTE、子查询、UNION、窗口函数、DISTINCT、无表来源、未绑定占位符等返回 `UNKNOWN`；写操作、越界表、文件操作、锁定读取和非批准函数返回 `BLOCK`。实际注释与提示、未支持的标识符及语法明确拒绝；字符串中的标记按词法区分。使用 MySQL 方言 AST 和节点/参数白名单，不以解析成功当作安全证明，也不改写原 SQL 后冒充原计划。
+
+`explain_checked` 自身每次重新预检，通过后验证当前库、SQL 模式、基础表类型和 MySQL 8.4，固定 JSON 计划版本 1，仅读取 `EXPLAIN FORMAT=JSON`。新版本、其他 SQL 模式或无法识别的计划进入 `UNKNOWN`。计划保留访问路径、索引、估算扫描/产出行数和排序证据；不回传原始条件、字面值或完整计划。单次扫描估算超阈值、连接阶段产出过大、规模较大的排序/临时表返回 `REVIEW`；缺少关键证据不按零处理，小表全扫不机械阻断，`LIMIT` 不豁免大扫描。
+
+| `DB_AGENT_ANALYSIS_` 后缀 | 默认值 | 用途 |
+| --- | --- | --- |
+| `MAX_SQL_BYTES` / `MAX_AST_NODES` / `MAX_AST_DEPTH` | `16384` / `512` / `32` | SQL 输入与解析复杂度预算 |
+| `MAX_TABLES` | `8` | 单条 SQL 的表引用上限 |
+| `MAX_PLAN_BYTES` / `MAX_PLAN_NODES` | `65536` / `256` | 计划字节与 JSON 值节点预算 |
+| `TIMEOUT_SECONDS` | `10` | 单次诊断预算，包含连接器排队、连接与读取 |
+| `REVIEW_SCAN_ROWS` / `REVIEW_JOIN_ROWS` / `REVIEW_SORT_ROWS` | `100000` / `1000000` / `100000` | 估算行数审核阈值，严格超过时命中 |
+
+阈值是初始策略，需结合目标环境校准；不是实测耗时或生产安全保证。报告额外有固定 8 KiB 元数据预算。每个报告包含 `report_id`、策略版本、时间、数据库、结构指纹、规则与证据；结构指纹去掉字面值，仅用于关联同形 SQL，不是参数绑定凭证或执行授权。基础表校验与计划采集不是整个数据库的原子快照。超时关闭连接并停止等待，不能据此声称服务器已取消查询。
+
+四种 `decision` 都会返回报告，均不执行业务 SQL。CLI 成功生成报告时退出码为 `0`，包括 `BLOCK` / `REVIEW` / `UNKNOWN`；配置错误为 `2`、报告外运行失败为 `1`，脚本必须读取 `decision`。业务拒绝也会正常回填给主模型解释。
 
 合成数据与白名单准备好后，显式运行真实 MySQL 集成测试：
 
@@ -122,9 +149,9 @@ uv run db-agent chat "查看 orders 的字段和索引，说明按 customer_id �
 DB_AGENT_MYSQL_INTEGRATION=1 uv run pytest tests/test_mysql_integration.py -q
 ```
 
-普通 `uv run pytest` 会跳过这些集成测试，避免隐式依赖数据库。集成测试不创建数据，验证真实元数据与账号权限；固定 INSERT 权限探针使用零行条件，并在事务结束时回滚。驱动采用 `aiomysql[rsa]`，包含本地 MySQL 密码认证所需的 RSA 支持。
+普通 `uv run pytest` 会跳过这些集成测试，避免隐式依赖数据库。集成测试不创建数据，验证真实元数据、账号权限和普通 EXPLAIN；固定 INSERT 权限探针使用零行条件，并在事务结束时回滚。驱动采用 `aiomysql[rsa]`，包含本地 MySQL 密码认证所需的 RSA 支持。
 
-每个连接器顺序处理请求，超过时间、行数或字节预算会返回错误并清理连接。`check`、`chat` 和 `db` 命令在 `outputs/runs/<uuid>.jsonl` 写入运行、模型、工具或数据库事件，记录状态、错误码、耗时及关联标识。记录不包含问题原文、密码、SQL、工具参数或结果正文；工具调用 ID 只保存摘要。记录失败会在 stderr 提示一次并继续业务，这些记录不承担审批账本职责。
+每个连接器顺序处理请求，超过时间、行数或字节预算会返回错误并清理连接。`check`、`chat` 和 `db` 命令在 `outputs/runs/<uuid>.jsonl` 写入运行、模型、工具、数据库和分析事件，记录状态、错误码、耗时、报告 ID、决策、策略版本、规则 ID 与结构指纹。记录不包含问题原文、密码、SQL、工具参数或结果正文；工具调用 ID 只保存摘要。记录失败会在 stderr 提示一次并继续业务，这些记录不承担审批账本职责。
 
 ## 要解决的业务问题
 
@@ -174,7 +201,7 @@ flowchart TD
 
 | 结果 | 语义 | 首版行为 |
 | --- | --- | --- |
-| `ALLOW` | 在当前身份、目标、SQL、参数及策略下通过检查 | 执行器再次落实必要校验和运行限制后执行 |
+| `ALLOW` | 在当前目标、完整 SQL 与策略下完成支持范围内的检查 | 当前仅返回报告；未来执行器必须重新校验并落实运行限制 |
 | `REVIEW` | 命中需要人工审核的策略 | 返回证据，停止自动执行 |
 | `BLOCK` | 权限不足、硬性禁用或明确不支持的操作 | 阻断；普通确认不能覆盖权限拒绝 |
 | `UNKNOWN` | 解析、计划采集或关键证据异常，不能完成评估 | 停止；不得当成低风险放行 |
@@ -194,27 +221,27 @@ flowchart TD
 
 ## 技术与模块
 
-当前通过 `langchain_openai.ChatOpenAI` 接入一个 OpenAI 兼容模型，由 `langchain.agents.create_agent` 调度 `list_tables` 和 `describe_table`。LangChain 内部使用 LangGraph，本项目不自写工具循环或自定义 Graph。默认每次 Agent 运行最多调用模型 4 次、工具 6 次，总时限 60 秒；工具顺序执行，模型请求禁用自动重试。
+当前通过 `langchain_openai.ChatOpenAI` 接入一个 OpenAI 兼容模型，由 `langchain.agents.create_agent` 调度元数据工具与 `analyze_sql`。LangChain 内部使用 LangGraph，本项目不自写工具循环或自定义 Graph。默认每次 Agent 运行最多调用模型 4 次、工具 6 次，总时限 60 秒；工具顺序执行，模型请求禁用自动重试。
 
 | 模块 | 状态 | 职责 |
 | --- | --- | --- |
 | `src/db_agent/config.py` | 已建立 | 独立读取并校验模型与数据库配置、本地表白名单和运行预算 |
-| `src/db_agent/agent.py` / `tools.py` | 已建立 | LangChain 调度、元数据工具、调用预算与响应处理 |
-| `src/db_agent/db.py` | 已建立 | 受限 MySQL 连接、授权基础表的字段与索引读取 |
-| `src/db_agent/cli.py` | 已建立 | 模型与数据库检查、元数据读取、独立对话入口 |
+| `src/db_agent/agent.py` / `tools.py` | 已建立 | LangChain 调度、元数据与诊断工具、调用预算与响应处理 |
+| `src/db_agent/db.py` | 已建立 | 受限 MySQL 连接、授权元数据与强制预检的普通 EXPLAIN |
+| `src/db_agent/policy.py` / `plans.py` / `analysis.py` | 已建立 | MySQL AST 静态规则、计划规则、结构化诊断报告 |
+| `src/db_agent/cli.py` | 已建立 | 模型与数据库检查、元数据读取、SQL 诊断、独立对话入口 |
 | `src/db_agent/records.py` | 已建立 | 最小运行事件与脱敏关联标识 |
 | `tests` | 已建立 | 离线行为测试、显式开启的 MySQL 集成测试与公开合成数据 fixture |
 | `compose.yaml` / `infra/mysql/init` | 已建立 | 本地 MySQL、持久化数据卷及只读账号初始化 |
 | `scripts/seed_local_mysql.py` | 已建立 | 管理员显式创建固定合成业务表与数据 |
-| `policy` | 计划 | 资源权限、SQL 语法检查、计划规则与风险决策 |
-| 查询执行与诊断 | 计划 | 普通 EXPLAIN、强制预检的业务 SELECT、诊断证据与结果引用 |
-| 风险规则测试 / `evals` | 计划 | 确定性风险规则测试和固定模型任务评测 |
+| 受控查询执行 | 计划 | 强制重新预检的业务 SELECT、结果大小限制与结果等价验证 |
+| `evals` | 计划 | 冻结样本上的模型任务评测 |
 
-当前本地 MySQL 配置使用 8.4.11，镜像引用以 `compose.yaml` 为准。元数据连接器的表白名单来自本地可信配置，不等于多用户身份与资源授权服务；后续 SQL 预检和执行仍需独立实现与验收。领域规则和连接器保持框架无关，框架负责调度，确定性代码负责授权与执行判断。实际遇到跨进程审批、持久恢复或复杂编排需求时，再扩展相应能力。
+当前本地 MySQL 配置使用 8.4.11，镜像引用以 `compose.yaml` 为准。连接器的表白名单来自本地可信配置，不等于多用户身份与资源授权服务；后续业务查询执行仍需独立实现与验收。领域规则和连接器保持框架无关，框架负责调度，确定性代码负责授权与执行判断。实际遇到跨进程审批、持久恢复或复杂编排需求时，再扩展相应能力。
 
 ## 近期交付与验收
 
-目标是分阶段完成可实际使用的 SQL 预检与诊断业务闭环。每个阶段以真实工具和可复现验收为交付条件，优先完成一条受控链路，再扩大功能范围。接入具体使用环境前，还需核对目标版本、账号权限、运行限制与业务结果；当前只支持连接检查与元数据读取，不具备业务 SQL 执行能力。
+目标是分阶段完成可实际使用的 SQL 预检与诊断业务闭环。每个阶段以真实工具和可复现验收为交付条件，优先完成一条受控链路，再扩大功能范围。接入具体使用环境前，还需核对目标版本、账号权限、运行限制与业务结果；当前支持预检和计划诊断，不具备业务 SQL 执行能力。
 
 | 阶段 | 交付 | 验收 |
 | --- | --- | --- |
@@ -222,18 +249,18 @@ flowchart TD
 | 第二阶段：业务闭环 | LangChain 领域工具接入、强制预检入口、诊断报告与轨迹 | 通过全部检查的查询执行；越权、高风险及无法判断请求停止；结果可追踪 |
 | 第三阶段：使用验收 | 启动说明、固定案例、目标环境配置说明和测试记录 | 在明确授权的数据源上按文档复现；每项能力与限制有对应证据 |
 
-首版至少覆盖以下行为，而不只验证模型能回复：
+当前已验证的预检/诊断行为与尚待查询执行阶段验收的行为：
 
-- [ ] 授权与未授权的数据源/库表请求行为不同，直接调用工具也无法绕过。
-- [ ] 小表合理扫描不被机械阻断，大扫描带 `LIMIT` 仍能被识别。
-- [ ] 多语句、越界对象、锁定查询和不支持的 SQL 不进入实际执行。
-- [ ] 计划获取失败、证据不足与规则服务异常进入 `UNKNOWN`，不自动放行。
-- [ ] SQL、参数或数据源变更后重新校验。
-- [ ] 调用次数、查询时间、结果大小有可测试的限制，错误可追溯。
-- [ ] 诊断引用真实结构和执行计划；未经验证的优化建议明确标注。
+- [x] 当前配置范围内，授权与未授权表请求行为不同，直接调用计划连接器也要重新预检。
+- [x] 真实小表扫描不被机械阻断；构造的大扫描计划即使 SQL 带 `LIMIT` 也返回审核。
+- [x] 多语句、越界对象、锁定查询和不支持的 SQL 不进入 EXPLAIN。
+- [x] 计划获取失败、证据不足进入 `UNKNOWN`，不自动放行。
+- [x] SQL 字面值或连接器目标/授权变化后重新校验与取计划，不缓存授权。
+- [x] 调用次数、诊断时限、计划大小有行为测试，错误可追溯。
+- [x] 真实模型调用元数据和 EXPLAIN 工具，基于报告解释估算及建议边界。
 - [ ] 候选查询若参与结果等价比较，也通过相同执行入口，测试集包含边界数据。
 
-模型评测与规则单测分开：规则测试不依赖模型；真实 MySQL 用合成数据验证计划与执行；模型评测记录模型版本、提示/规则版本、数据初态、样本与失败原因。预先划分开发样本和冻结样本，必要时重复运行。
+模型评测与规则单测分开：规则测试不依赖模型；当前真实 MySQL 用合成数据验证元数据、权限和计划，不验证业务查询执行；本次真实模型调用只是链路检查，不代表冻结测试集上的任务正确率。后续模型评测记录模型版本、提示/规则版本、数据初态、样本与失败原因，预先划分开发样本和冻结样本，必要时重复运行。
 
 大规模计划 fixture 只用于规则边界测试，应标注为构造或脱敏样本。本地小库测试不等于 TB 级压测；当前没有生产指标、准确率或性能提升结论。
 
@@ -263,6 +290,7 @@ flowchart TD
 - [aiomysql：连接 API](https://aiomysql.readthedocs.io/en/stable/connection.html)
 - [MySQL 8.4：EXPLAIN](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
 - [MySQL 8.4：执行计划输出](https://dev.mysql.com/doc/refman/8.4/en/explain-output.html)
+- [SQLGlot：解析与限制](https://sqlglot.com/sqlglot.html#faq)
 - [MySQL 8.4：LIMIT 优化](https://dev.mysql.com/doc/refman/8.4/en/limit-optimization.html)
 - [MySQL 8.4：执行时间提示](https://dev.mysql.com/doc/refman/8.4/en/optimizer-hints.html#optimizer-hints-execution-time)
 
