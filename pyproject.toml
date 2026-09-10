@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "db-agent"
 version = "0.1.0"
-description = "面向研发人员的数据库预检与诊断 Agent 实验项目"
+description = "面向研发人员的数据库预检与诊断 Agent"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

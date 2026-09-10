@@ -9,7 +9,7 @@ from db_agent.config import ConfigurationError, load_settings
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="数据库 Agent：LangChain 初始化入口")
+    parser = argparse.ArgumentParser(description="数据库 Agent：配置检查与数据库问答")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("config", help="校验配置，仅显示配置状态")
     commands.add_parser("check", help="调用一次模型，检查连通性")
