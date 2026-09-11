@@ -114,6 +114,7 @@ class RuntimeMiddleware(AgentMiddleware):
         model, prompt: str, connector: MetadataConnector | None,
         analysis_limits: AnalysisSettings, executions: list[QueryExecution],
         conversation_mode: bool = False,
+        analyses: list[QueryExecution] | None = None,
     ):
         self.record = record
         self.tool_names = frozenset(tool_names)
@@ -127,6 +128,7 @@ class RuntimeMiddleware(AgentMiddleware):
         self.connector = connector
         self.analysis_limits = analysis_limits
         self.executions = executions
+        self.analyses = analyses if analyses is not None else []
         self.schemas: dict[str, dict] = {}
         self.semantic_reviews: list[dict] = []
         self.query_intents: list[dict] = []
@@ -161,7 +163,7 @@ class RuntimeMiddleware(AgentMiddleware):
                 queries, missing_reports=self.tool_calls.count("execute_query") - len(queries),
             ),
             queries, self.model_calls, self.tool_calls.copy(), deepcopy(self.semantic_reviews),
-            deepcopy(self.query_intents),
+            deepcopy(self.query_intents), deepcopy(self.analyses),
         )
 
     @hook_config(can_jump_to=["end"])
@@ -446,6 +448,7 @@ async def run_agent_observed(
     if conversation_mode:
         prompt = conversation_prompt(previous_requests, prompt)
     executions: list[QueryExecution] = []
+    analyses: list[QueryExecution] = []
     runtime = None
 
     # 显式映射项目配置，不读取全局 OPENAI_* 凭据，也不启用第三方追踪。
@@ -479,13 +482,13 @@ async def run_agent_observed(
                         connector, analysis_limits, query_settings or QuerySettings(), record
                     )
                     tools = [
-                        *metadata_tools(connector), analysis_tool(service),
+                        *metadata_tools(connector), analysis_tool(service, analyses.append),
                         query_tool(query_service, executions.append),
                     ]
                 runtime = RuntimeMiddleware(
                     record, {tool.name for tool in tools}, settings=settings, model=model,
                     prompt=prompt, connector=connector, analysis_limits=analysis_limits,
-                    executions=executions,
+                    executions=executions, analyses=analyses,
                     conversation_mode=conversation_mode,
                 )
                 agent = create_agent(
@@ -556,4 +559,6 @@ async def run_agent_observed(
     answer = message.text.strip()
     if not answer:
         raise AgentResponseError("模型未返回文本回答")
-    return AgentRunResult(answer, executions, runtime.model_calls, runtime.tool_calls.copy())
+    return AgentRunResult(
+        answer, executions, runtime.model_calls, runtime.tool_calls.copy(), analyses=analyses,
+    )

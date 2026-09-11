@@ -26,9 +26,17 @@ class AnalyzeSqlArguments(NoArguments):
     sql: str = Field(strict=True, min_length=1, max_length=65536)
 
 
-def analysis_tool(service: SqlAnalysisService) -> StructuredTool:
+def analysis_tool(
+    service: SqlAnalysisService, on_analysis: Callable[[QueryExecution], None] | None = None,
+) -> StructuredTool:
+    async def analyze(sql: str) -> dict:
+        report = await service.analyze(sql)
+        if on_analysis is not None:
+            on_analysis(QueryExecution(sql, deepcopy(report)))
+        return report
+
     return StructuredTool.from_function(
-        coroutine=service.analyze,
+        coroutine=analyze,
         name="analyze_sql",
         description=(
             "对完整 MySQL SQL 做权限与静态预检，通过后获取普通 EXPLAIN JSON 并返回诊断证据。"

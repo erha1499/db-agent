@@ -129,6 +129,8 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("config", help="校验配置，仅显示配置状态")
     commands.add_parser("check", help="调用一次模型，检查连通性")
+    web = commands.add_parser("web", help="启动本机 Web 对话页面")
+    web.add_argument("--port", type=int, default=8000, help="本机监听端口，默认 8000")
     chat = commands.add_parser("chat", help="进行一次带元数据、诊断和只读查询工具的独立问答")
     chat.add_argument("prompt", help="问题或需要解释的 SQL")
     commands.add_parser("session", help="进行仅保留成功用户请求的会话内多轮查询")
@@ -149,6 +151,15 @@ def main(argv: list[str] | None = None) -> int:
             "--stdin", action="store_true", help="从标准输入读取有长度限制的 UTF-8 SQL"
         )
     args = parser.parse_args(argv)
+    if args.command == "web":
+        if not 1024 <= args.port <= 65535:
+            parser.error("Web 端口须在 1024–65535 之间")
+        import uvicorn
+
+        from db_agent.web import create_app
+
+        uvicorn.run(create_app(), host="127.0.0.1", port=args.port, access_log=False)
+        return 0
     if args.command == "chat" and not args.prompt.strip():
         parser.error("问题不能为空")
 
