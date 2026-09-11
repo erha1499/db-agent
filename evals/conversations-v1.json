@@ -1,0 +1,719 @@
+{
+  "suite_version": "conversation-eval-v1",
+  "dataset_version": "ecommerce-v1",
+  "created_at": "2026-09-11T03:45:51.725358+00:00",
+  "status": "frozen_before_first_execution",
+  "required_dataset": {
+    "orders": 1000000,
+    "customers": 100000,
+    "products": 10000,
+    "boundary_ids": "1..8",
+    "background_ids": ">=1000",
+    "time_convention": "Synthetic business timestamps are DATETIME; fixture contract interprets them as UTC. DATETIME itself carries no timezone.",
+    "seed": 20260910
+  },
+  "provenance": {
+    "draft_source": "work/conversation-eval-draft.json",
+    "draft_source_sha256": "ef0c10918b4343fd3d543c7a9394b96aca47e558b5943256047133522a97306e",
+    "based_on_commit": "531e59400f85da381cdc68984e1ea6b89b82402b",
+    "previous_suite_file_sha256": {
+      "evals/ecommerce-v1.json": "250cd649e8fe7dce2be92deeb6bc46176d4d213a01091e1f272263f741850f84",
+      "evals/ecommerce-v2.json": "99d155b4fe06728cf45712da4479ac08b35cbb6d979288e7d425b5a0cb8fd388",
+      "evals/ecommerce-v3.json": "b79c705826029a286a2698ac42ed8ecb39eddd921e4b102ed1b05acca3100d92",
+      "evals/ecommerce-v4.json": "71d0b7b92006299b6d7a16edc19af8c5c69ce2309de3489137013e506adf4baa",
+      "evals/ecommerce-v5.json": "59e305d40de21563988804ca5a07c907aadff1d6af3f323f664d399c74d6f8f8",
+      "evals/ecommerce-v6.json": "851216ec3a32088c394ea990b783d3cc9ebb723ca6f214c0c26adcd0e7beee03",
+      "evals/ecommerce-v7.json": "fcd9cfaf0af2d8485dea41eef49e50b8412442a44d5bcafcf01c89e4712e2a9d",
+      "evals/ecommerce-v8.json": "aaf285b1f523631f50ab7d06b5c99f96840774555198d988ca4cada21ea4c0d0"
+    },
+    "dataset_source_file_sha256": {
+      "src/db_agent/ecommerce.py": "525253f9f7ed5009811acb950915beeb0ced60221aac90ae9ec3cee5d9b2501d"
+    },
+    "oracle_policy": "Business expectations are manually reconstructed from public literal ecommerce-v1 ledger and closed-form formulas in this worktree. No model/database/data-generator execution or outputs access. reference_sql and oracle are only for human review and must never be inserted into runtime prompts. Each conversation starts independently; references in a later turn are resolved against earlier turns of that conversation, never another conversation. Do not infer execution permission from history.",
+    "construction_boundary": "All eighteen prompts, reference SQL strings, manual oracle statements and expected rows are preserved exactly from the final draft. Only conversation splits, SQL-AST-derived authorized table names and expected.truncated=false are added to the cases. No model, database, data generator, generator aggregation or outputs path was accessed during construction or formalization. Reference SQL and oracle values are for independent acceptance only and never enter product prompts.",
+    "split_policy": "Keep the fixed conversation order: the first three conversations are dev and the final three are holdout. Each conversation has three sequential turns, starts with an empty history, and shares no request history with another conversation.",
+    "context_protocol": "Prepend business_context plus two newline characters only to the first turn prompt of each conversation. Later turns contain only their original current prompt. Build each effective input using conversation_prompt(previous_user_requests, current_user_request); previous requests retain the first-turn dictionary, while reference SQL, oracle values and expected rows are never included.",
+    "case_content_fixed_at": "2026-09-11T03:45:51.725358+00:00",
+    "case_content_sha256": "a48508921ab525beb13412be30851a9c6ccb1cc4b3aa9c08aa26b16ae80f7b09",
+    "dev_content_sha256": "eba553f9aeb76f383b87c3b94fa4f28552e78846809077339db448fcf6d7e142",
+    "holdout_content_sha256": "fd21e62b5b3e0e4657145388e75012b8d3213ddf9f7ff1a728e2a07be252ad65",
+    "content_hash_encoding": "SHA256 of UTF-8 json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(comma,colon)); case_content covers the ordered conversations array, dev_content and holdout_content cover their ordered split subsets. Later product source metadata is excluded.",
+    "production_freeze_status": "frozen",
+    "product_freeze_captured_at": "2026-09-11T03:59:20.260703+00:00",
+    "product_source_snapshot": {
+      "files": {
+        "src/db_agent/__init__.py": "f3e158c4a08ea3e6398a34fd2264d1461b13f0956fa29cdc3cb145bdefbcdd16",
+        "src/db_agent/__main__.py": "75af0a9f9e570b2b504fd284f848357d341562644c809ecd20cac05c15e410d8",
+        "src/db_agent/agent.py": "1362e139c07b90ce27eebf6305207d675ef620eee328705bcf3e4fe16a518c6c",
+        "src/db_agent/analysis.py": "493d04c0cd03ca7214f9d07f45f94774162af794694be83bb4397044b55fd742",
+        "src/db_agent/cli.py": "41f71f0646e172b8d1d587db01faae25aaa63a6bfbb445be5411a0d88bb16d61",
+        "src/db_agent/config.py": "eb09e6bc272e9e756b9fba438ff4999c72609b4eb487e6bac3c48832a10e33b1",
+        "src/db_agent/conversation_context.py": "5cdcf448a4ff2fba25ac8f2a95ea3d21d0ecf4a3477e8876a230eb85be14294f",
+        "src/db_agent/conversation_evaluation.py": "09dad0db74febc53abef7b9a0fd635e3a85fda35fc65c92aeba2576c004f867e",
+        "src/db_agent/db.py": "ce978be91f70a1cb7b5f8cde15f508f4b10fe35f8b194c53d7c677a1bd48a4e2",
+        "src/db_agent/ecommerce.py": "525253f9f7ed5009811acb950915beeb0ced60221aac90ae9ec3cee5d9b2501d",
+        "src/db_agent/evaluation.py": "e6453dc74b499dd2d0f24a062ac5771a7e909b06df62d2007f9958016d56dddc",
+        "src/db_agent/intents.py": "e1c9d2c1b4a8fdbc0c7d73b4c6143af8ba51c03e757e1f3d59817c25329780c1",
+        "src/db_agent/plans.py": "77394c94c9583964ad4fa3dc2423b60dbc466a3d683a298b44e787c7884f7dcb",
+        "src/db_agent/policy.py": "63378146accc8e43012c13e4d1465ea6f8a9427b502388ff2e121dc2e7fafe0a",
+        "src/db_agent/presentation.py": "449c8cb348682798cf243ca7c7b0f40e2ed9ef56dbb5dcccc9e4b4bb313cb719",
+        "src/db_agent/query.py": "5a6f20b035bee30b3576b5a38e2014995a0cac0b947d8f03ccbb12d3c90e9d9f",
+        "src/db_agent/records.py": "485a6a18d348866afcbf38f88feb1a09e14de34870c44f5b0d76212777e1c9d5",
+        "src/db_agent/results.py": "b18e138c20ec0fe09fb2e5cb7e6db2849e1c72ab3f9b495e4a849f91cd07fa99",
+        "src/db_agent/semantics.py": "901b554a6ec6bdc3f44ad742127e84b73c892b958a68a146aa92e022ecd7b5b8",
+        "src/db_agent/session.py": "aebc284d47c09000cbece9b4459551b143c0ed7310a47c1f3ed090abe6d545f8",
+        "src/db_agent/tools.py": "012bcd81e63a156a46ca5c360f1f378ca3ed14d1bdef963e864a0e4c53ca9f8c",
+        "uv.lock": "b886e2a80f52e66f5d930cc86fe1f24563ddf21f0bbdc4092177873889a7823c",
+        "scripts/evaluate_ecommerce.py": "d42163e9be0c8277a27a4108e08127b4a123c76c4547769d131e61182a4df368",
+        "scripts/evaluate_conversations.py": "e7c37967284abcf510a0cfbe008221a6d6b97e158461d51a658bfb6c7ae39b6e"
+      },
+      "sha256": "5922709cc2a196a839f9b5e205ddc34015cb30845be6a22c1d51b77ed0e9be80"
+    },
+    "product_prompt_sha256_before_acceptance": {
+      "main": "c6a4807873aec9e9bdeaa488933cbc413060d7d32a8abe09d56b7f7e4744fa39",
+      "intent": "be5d2b9e360ddb36b2196f871c1016913e0ceea6c5283cdf6fb2c9d4362cbd67",
+      "review": "b2c7890660477b0f1ba0594b8ebe9136e57874993797f8f5663f2142892c541d",
+      "conversation": "8c8f5b0b5c0cd6e81a0fa409b96c4b177eea9a567c5c905e230ef2d977d889cc"
+    },
+    "independent_oracle_review": "Integrator independently checked all 18 formal prompts and expected rows against the public literal ledger and closed-form background formulas before any model or SQL acceptance call. Cross-month customer population, duplicate refund rows, NULLs, calendar changes and disjoint window changes were explicitly recalculated. Reference SQL was not used to generate the expected answers.",
+    "execution_status": "not_executed",
+    "business_context_sha256": "20e4f9cab47e54b8aaf5cb021688f61eb0d087d0111d19eea13cec8cb75dc377",
+    "preregistered_runs": {
+      "sql": {
+        "dev": 1,
+        "holdout": 1
+      },
+      "agent": {
+        "dev": 1,
+        "holdout": 2
+      }
+    }
+  },
+  "business_context": "可信业务字典（来源：公开 ecommerce-v1 数据协议；适用于本套件所有题目）：ec_orders.status 的取值为 pending、cancelled、paid、refunded、partially_refunded；题目中的已支付订单包括 paid、refunded、partially_refunded，订单毛额为 total_amount，不自动扣减退款。ec_payments.status 为 pending、failed、succeeded，成功支付明确指 status=succeeded，到账日期用 paid_at。ec_refunds.status 为 pending、failed、succeeded，成功退款明确指 status=succeeded，完成日期用 completed_at，申请日期用 created_at。退款通过 payment_id 关联支付 id，退款金额取退款 amount；商品销售净额按明细 quantity*unit_price-discount_amount。固定验收客户和订单 id 为1至8，固定商品 id 为1至6，背景记录 id 从1000起且不引用固定客户商品。本合成数据的业务日期约定按UTC解释，但DATETIME字段本身不携带时区。题目未授予新的表权限、执行权限或额外预算；仍使用原有受控工具与服务端配置。",
+  "execution_boundary": "This is the immutable pre-execution declaration. ALLOW/completed are expected outcomes, not observed results. Actual SQL and model acceptance outcomes are kept in separate incremental reports and evals/CONVERSATIONS.md; no automatic threshold relaxation or replacement of failed runs.",
+  "conversations": [
+    {
+      "id": "conversation_february_customer_january_comparison",
+      "coverage": [
+        "time_filter_inheritance",
+        "status_filter_inheritance",
+        "grouping_granularity",
+        "two_period_recalculation",
+        "customer_population_expansion",
+        "zero_month_and_negative_difference"
+      ],
+      "turns": [
+        {
+          "prompt": "请实际查询ec_orders固定订单（id<1000），统计按created_at在2026年2月创建的已支付订单笔数与total_amount毛额合计。已支付状态包括paid、partially_refunded、refunded；二月区间为2026-02-01含至2026-03-01不含，订单毛额不扣退款。依次返回订单笔数、二月订单毛额合计。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                3,
+                "140.00"
+              ]
+            ],
+            "ordered": false,
+            "truncated": false
+          },
+          "oracle": "固定账本中订单2、4、6在二月创建且属于paid/partially_refunded/refunded，金额90+0+50=140，共3笔。订单1虽然二月支付，但created_at在一月，不能纳入二月创建口径；订单3和5不是已支付状态。此轮建立created_at、二月半开范围、id<1000与三个已支付状态。",
+          "reference_sql": "SELECT COUNT(*) AS order_count, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 AND created_at >= '2026-02-01' AND created_at < '2026-03-01' AND status IN ('paid', 'partially_refunded', 'refunded')",
+          "tables": [
+            "ec_orders"
+          ]
+        },
+        {
+          "prompt": "保留刚才的月份、created_at日期口径、固定范围和已支付状态条件，改为按customer_id拆分。依次返回客户id、订单笔数、二月订单毛额合计，按毛额合计降序，同金额客户id升序；有订单但金额为0的客户也保留。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                1,
+                1,
+                "90.00"
+              ],
+              [
+                2,
+                1,
+                "50.00"
+              ],
+              [
+                3,
+                1,
+                "0.00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "完全继承第1轮筛选，订单2属于客户1金额90，订单6属于客户2金额50，订单4属于客户3金额0。按客户分组各1笔，按二月毛额90、50、0降序。这里仅改变统计粒度，没有换成paid_at、扩大日期或移除状态。",
+          "reference_sql": "SELECT customer_id, COUNT(*) AS order_count, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 AND created_at >= '2026-02-01' AND created_at < '2026-03-01' AND status IN ('paid', 'partially_refunded', 'refunded') GROUP BY customer_id ORDER BY SUM(total_amount) DESC, customer_id ASC",
+          "tables": [
+            "ec_orders"
+          ]
+        },
+        {
+          "prompt": "现在仍按每个客户一行比较一月和二月，请从当前数据库重新查询两期，不只处理上一轮返回的客户或数值。继续使用ec_orders固定范围id<1000、created_at日期口径、刚才三个已支付状态及订单原毛额；一月为2026-01-01含至2026-02-01不含，二月为2026-02-01含至2026-03-01不含。返回在任一期有至少一张符合条件订单的客户，某月没有这种订单时该月毛额计0，有订单但毛额为0也保留。依次输出客户id、一月毛额、二月毛额、二月减一月的差额，按差额降序，同差额客户id升序。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                2,
+                "0.00",
+                "50.00",
+                "50.00"
+              ],
+              [
+                3,
+                "0.00",
+                "0.00",
+                "0.00"
+              ],
+              [
+                1,
+                "100.00",
+                "90.00",
+                "-10.00"
+              ],
+              [
+                6,
+                "60.00",
+                "0.00",
+                "-60.00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "独立按完整固定账本重算：一月created_at已支付订单为1(客户1/100)和7(客户6/60)；二月为2(客户1/90)、4(客户3/0)、6(客户2/50)。两期客户并集是1、2、3、6。客户1一月100/二月90/差-10；客户2为0/50/+50；客户3有二月零金额订单，仍为0/0/0；客户6只有一月订单，必须新增到上一轮未返回的客户集合，60/0/-60。按差额50、0、-10、-60输出2、3、1、6。客户7只有三月订单、客户5只有待支付订单、客户4/8无订单，均排除。参考SQL先以两个完整月份和状态限定输入，再在非NULL created_at范围内用布尔条件乘金额作两期条件合计；无匹配月份得到精确0.00，不需要不支持的函数或语法。SQL仅用于人工审核，不进入prompt。",
+          "reference_sql": "SELECT customer_id, SUM((created_at < '2026-02-01') * total_amount) AS january_gross, SUM((created_at >= '2026-02-01') * total_amount) AS february_gross, SUM((created_at >= '2026-02-01') * total_amount) - SUM((created_at < '2026-02-01') * total_amount) AS gross_change FROM ec_orders WHERE id < 1000 AND created_at >= '2026-01-01' AND created_at < '2026-03-01' AND status IN ('paid', 'partially_refunded', 'refunded') GROUP BY customer_id ORDER BY gross_change DESC, customer_id ASC",
+          "tables": [
+            "ec_orders"
+          ]
+        }
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "conversation_payment_calendar_and_status_change",
+      "coverage": [
+        "explicit_time_basis_change",
+        "sort_change",
+        "status_filter_removal"
+      ],
+      "turns": [
+        {
+          "prompt": "请实际查询ec_payments固定订单流水（order_id<1000），只取status=succeeded且paid_at在2026-02-01含至2026-03-01不含的成功支付。按order_id统计，依次返回订单id、流水笔数、amount合计，按订单id升序。拆分支付分别计笔数。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                1,
+                1,
+                "100.00"
+              ],
+              [
+                2,
+                2,
+                "90.00"
+              ],
+              [
+                4,
+                1,
+                "0.00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "按到账paid_at计二月的成功流水为12/100、22/40、23/50、41/0。按订单得到1:1笔100，2:2笔90，4:1笔0；支付61于三月到账不在本轮。",
+          "reference_sql": "SELECT order_id, COUNT(*) AS payment_count, SUM(amount) AS amount_total FROM ec_payments WHERE order_id < 1000 AND status = 'succeeded' AND paid_at >= '2026-02-01' AND paid_at < '2026-03-01' GROUP BY order_id ORDER BY order_id ASC",
+          "tables": [
+            "ec_payments"
+          ]
+        },
+        {
+          "prompt": "统计对象、固定订单范围、成功状态、月份和返回列都不变，但二月改按流水created_at筛选，不再按paid_at。排序改为金额合计降序，同金额订单id升序。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                2,
+                2,
+                "90.00"
+              ],
+              [
+                6,
+                1,
+                "50.00"
+              ],
+              [
+                4,
+                1,
+                "0.00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "只把二月筛选字段从paid_at改为流水created_at。支付12创建于一月而被移出；支付61创建于二月28日而被移入。二月创建的成功流水22、23、41、61，订单2金额90、6金额50、4金额0。排序从订单id升序改成金额降序。",
+          "reference_sql": "SELECT order_id, COUNT(*) AS payment_count, SUM(amount) AS amount_total FROM ec_payments WHERE order_id < 1000 AND status = 'succeeded' AND created_at >= '2026-02-01' AND created_at < '2026-03-01' GROUP BY order_id ORDER BY SUM(amount) DESC, order_id ASC",
+          "tables": [
+            "ec_payments"
+          ]
+        },
+        {
+          "prompt": "撤销只看成功支付的限制，改为统计刚才二月创建的全部支付尝试，包括失败和待处理。固定范围、日期字段、月份、分组、三列和排序沿用上一轮；这次amount合计表示尝试金额，不是到账。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                2,
+                3,
+                "180.00"
+              ],
+              [
+                3,
+                1,
+                "50.00"
+              ],
+              [
+                6,
+                1,
+                "50.00"
+              ],
+              [
+                5,
+                1,
+                "25.00"
+              ],
+              [
+                4,
+                1,
+                "0.00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "继承第2轮created_at二月口径并删除status条件。订单2包含失败90及成功40、50，共3笔180；订单3失败50、订单6成功50并列按id3在6前；订单5待处理25；订单4成功0。订单1的两笔均在一月创建，不能因回忆第1轮paid_at口径重新纳入。",
+          "reference_sql": "SELECT order_id, COUNT(*) AS payment_count, SUM(amount) AS amount_total FROM ec_payments WHERE order_id < 1000 AND created_at >= '2026-02-01' AND created_at < '2026-03-01' GROUP BY order_id ORDER BY SUM(amount) DESC, order_id ASC",
+          "tables": [
+            "ec_payments"
+          ]
+        }
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "conversation_add_remove_line_filters",
+      "coverage": [
+        "filter_addition",
+        "filter_removal",
+        "filter_replacement",
+        "group_population_preservation"
+      ],
+      "turns": [
+        {
+          "prompt": "请实际查询ec_order_items固定订单明细（order_id<1000），只看product_id为1或2的明细，不区分订单状态。按product_id统计，依次返回商品id、明细行数、quantity合计、discount_amount合计、line_total合计，按商品id升序。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                1,
+                3,
+                "6",
+                "10.00",
+                "230.00"
+              ],
+              [
+                2,
+                2,
+                "2",
+                "0.00",
+                "40.00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "商品1出现在订单1、2、8，各quantity2，明细净额80、70、80，折扣仅订单2为10，故3行/6件/折扣10/净额230。商品2出现在订单1、2，各1件20无折扣，故2行/2件/折扣0/净额40。这组商品联合指标不是直接复述已有单题。",
+          "reference_sql": "SELECT product_id, COUNT(*) AS line_count, SUM(quantity) AS units, SUM(discount_amount) AS discount_total, SUM(line_total) AS net FROM ec_order_items WHERE order_id < 1000 AND product_id IN (1, 2) GROUP BY product_id ORDER BY product_id ASC",
+          "tables": [
+            "ec_order_items"
+          ]
+        },
+        {
+          "prompt": "在刚才的明细范围上再加一条：单行quantity至少为2。返回列、分组和排序保持不变，统计只针对满足这条新条件的明细。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                1,
+                3,
+                "6",
+                "10.00",
+                "230.00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "继承固定范围和product_id集合，增加逐行quantity>=2后，商品1三行均保留，商品2两行quantity1全部排除，不能留下一个补零的商品2组。其余聚合和排序不变。",
+          "reference_sql": "SELECT product_id, COUNT(*) AS line_count, SUM(quantity) AS units, SUM(discount_amount) AS discount_total, SUM(line_total) AS net FROM ec_order_items WHERE order_id < 1000 AND product_id IN (1, 2) AND quantity >= 2 GROUP BY product_id ORDER BY product_id ASC",
+          "tables": [
+            "ec_order_items"
+          ]
+        },
+        {
+          "prompt": "撤销上一轮的单行quantity限制，改为只看订单1和2。商品1或2的范围、五列、分组和排序继续保留。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                1,
+                2,
+                "4",
+                "10.00",
+                "150.00"
+              ],
+              [
+                2,
+                2,
+                "2",
+                "0.00",
+                "40.00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "先删除quantity限制，再添加order_id属于1、2。商品2必须重新出现；商品1不再计订单8，从3行/6件/230变成2行/4件/(80+70)=150，折扣仍10。商品2仍2行/2件/40。只在第2轮返回行上做客户端过滤无法正确恢复商品2，须重新查询完整当前条件。",
+          "reference_sql": "SELECT product_id, COUNT(*) AS line_count, SUM(quantity) AS units, SUM(discount_amount) AS discount_total, SUM(line_total) AS net FROM ec_order_items WHERE order_id < 1000 AND order_id IN (1, 2) AND product_id IN (1, 2) GROUP BY product_id ORDER BY product_id ASC",
+          "tables": [
+            "ec_order_items"
+          ]
+        }
+      ],
+      "split": "dev"
+    },
+    {
+      "id": "conversation_empty_then_calendar_expansion",
+      "coverage": [
+        "empty_result",
+        "condition_change_after_empty",
+        "time_basis_change",
+        "status_filter_removal",
+        "nullable_data"
+      ],
+      "turns": [
+        {
+          "prompt": "请实际查询ec_refunds固定订单退款（order_id<1000），只取status=succeeded且completed_at在2026-03-10含至2026-03-19不含的退款。依次返回退款id、order_id、amount、created_at、completed_at，按退款id升序。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "成功退款的三月完成日只有3日、5日和20日，3月10日至19日半开范围内没有成功完成记录。此轮必须为空，不能自动扩日期或改申请时间。",
+          "reference_sql": "SELECT id, order_id, amount, created_at, completed_at FROM ec_refunds WHERE order_id < 1000 AND status = 'succeeded' AND completed_at >= '2026-03-10' AND completed_at < '2026-03-19' ORDER BY id ASC",
+          "tables": [
+            "ec_refunds"
+          ]
+        },
+        {
+          "prompt": "把刚才完成时间范围的结束时点延长到2026-03-21零点，不含该时点。开始时点、成功状态、固定范围、返回列和排序不变，再查一次。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                81,
+                8,
+                "20.00",
+                "2026-03-20T12:00:00",
+                "2026-03-20T12:05:00"
+              ],
+              [
+                82,
+                8,
+                "20.00",
+                "2026-03-20T12:00:00",
+                "2026-03-20T12:05:00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "仅扩大上界到3月21日，纳入3月20日完成的退款81、82，各20。空结果不应导致遗忘原开始时点3月10日、completed_at字段和status=succeeded。两行字段值相同但退款id不同，必须保留两行。",
+          "reference_sql": "SELECT id, order_id, amount, created_at, completed_at FROM ec_refunds WHERE order_id < 1000 AND status = 'succeeded' AND completed_at >= '2026-03-10' AND completed_at < '2026-03-21' ORDER BY id ASC",
+          "tables": [
+            "ec_refunds"
+          ]
+        },
+        {
+          "prompt": "固定范围和刚才3月10日至21日的半开区间保留，但日期改按申请created_at，取消退款status筛选。依次返回退款id、status、order_id、amount、created_at、completed_at，按申请时间降序，同时间退款id升序；未完成时间保留NULL。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                81,
+                "succeeded",
+                8,
+                "20.00",
+                "2026-03-20T12:00:00",
+                "2026-03-20T12:05:00"
+              ],
+              [
+                82,
+                "succeeded",
+                8,
+                "20.00",
+                "2026-03-20T12:00:00",
+                "2026-03-20T12:05:00"
+              ],
+              [
+                83,
+                "failed",
+                8,
+                "5.00",
+                "2026-03-17T12:00:00",
+                null
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "第3轮把完成时间改为申请时间并移除成功状态，仅保留区间和固定范围。新增失败退款83，申请3月17日、金额5、完成NULL；81/82申请3月20日排前且同时间按id81、82升序。不能只对上一轮两行排序而漏掉新符合条件的83。该连续空集、扩范围、改口径组合不是已有单题的同义复述。",
+          "reference_sql": "SELECT id, status, order_id, amount, created_at, completed_at FROM ec_refunds WHERE order_id < 1000 AND created_at >= '2026-03-10' AND created_at < '2026-03-21' ORDER BY created_at DESC, id ASC",
+          "tables": [
+            "ec_refunds"
+          ]
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "conversation_bounded_background_window",
+      "coverage": [
+        "background_closed_form",
+        "filter_inheritance",
+        "filter_addition",
+        "filter_removal",
+        "aggregate_to_detail"
+      ],
+      "turns": [
+        {
+          "prompt": "请实际查询ec_orders中customer_id=1000且created_at在2026-02-15 12:00:00含至12:00:10不含的订单，不筛status。依次返回订单数、total_amount合计、最小订单id、最大订单id。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                10,
+                "1000.00",
+                1000,
+                10000
+              ]
+            ],
+            "ordered": false,
+            "truncated": false
+          },
+          "oracle": "闭式公式k=0..999，订单id=1000+1000k，创建时间12:00:00+k秒、支付晚60秒、金额100。首轮窗口取k0..9，共10笔1000，id最小1000、最大10000。没有调用生成器或数据库来取预期。",
+          "reference_sql": "SELECT COUNT(*) AS order_count, SUM(total_amount) AS gross, MIN(id) AS first_id, MAX(id) AS last_id FROM ec_orders WHERE customer_id = 1000 AND created_at >= '2026-02-15 12:00:00' AND created_at < '2026-02-15 12:00:10'",
+          "tables": [
+            "ec_orders"
+          ]
+        },
+        {
+          "prompt": "保留刚才所有条件，再要求paid_at不早于2026-02-15 12:01:05。仍返回相同的四列。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                5,
+                "500.00",
+                6000,
+                10000
+              ]
+            ],
+            "ordered": false,
+            "truncated": false
+          },
+          "oracle": "在第1轮k0..9范围内叠加paid_at>=12:01:05，相当于k>=5，交集k5..9，共5笔500、id6000至10000。不能用新条件替换原created_at上界，否则会纳入后续大段cohort。",
+          "reference_sql": "SELECT COUNT(*) AS order_count, SUM(total_amount) AS gross, MIN(id) AS first_id, MAX(id) AS last_id FROM ec_orders WHERE customer_id = 1000 AND created_at >= '2026-02-15 12:00:00' AND created_at < '2026-02-15 12:00:10' AND paid_at >= '2026-02-15 12:01:05'",
+          "tables": [
+            "ec_orders"
+          ]
+        },
+        {
+          "prompt": "撤销刚加的paid_at限制，同时把创建时间范围缩短为2026-02-15 12:00:00含至12:00:05不含。仍只看客户1000、不筛status；这次列出订单id、created_at、paid_at、total_amount，按created_at和订单id升序。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                1000,
+                "2026-02-15T12:00:00",
+                "2026-02-15T12:01:00",
+                "100.00"
+              ],
+              [
+                2000,
+                "2026-02-15T12:00:01",
+                "2026-02-15T12:01:01",
+                "100.00"
+              ],
+              [
+                3000,
+                "2026-02-15T12:00:02",
+                "2026-02-15T12:01:02",
+                "100.00"
+              ],
+              [
+                4000,
+                "2026-02-15T12:00:03",
+                "2026-02-15T12:01:03",
+                "100.00"
+              ],
+              [
+                5000,
+                "2026-02-15T12:00:04",
+                "2026-02-15T12:01:04",
+                "100.00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "新创建区间取k0..4，共5条明细，id1000至5000，创建秒0至4、支付秒0至4但晚一分钟，各100。必须删除第2轮paid_at>=12:01:05，否则这5条会被全部排除。新集合与第2轮k5..9不相交，不能从上一轮查询结果做本地裁剪恢复；同时仍须遵守客户1000与新的创建上界。",
+          "reference_sql": "SELECT id, created_at, paid_at, total_amount FROM ec_orders WHERE customer_id = 1000 AND created_at >= '2026-02-15 12:00:00' AND created_at < '2026-02-15 12:00:05' ORDER BY created_at ASC, id ASC",
+          "tables": [
+            "ec_orders"
+          ]
+        }
+      ],
+      "split": "holdout"
+    },
+    {
+      "id": "conversation_topic_switch_drops_old_table_filters",
+      "coverage": [
+        "topic_switch",
+        "object_scope_replacement",
+        "stale_filter_rejection",
+        "nullable_background_groups"
+      ],
+      "turns": [
+        {
+          "prompt": "请实际查询ec_products中id从1000含到1020不含、category为electronics且已经退役的背景商品，退役以retired_at不为空为准。依次返回商品id、category、retired_at，按商品id降序。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                1000,
+                "electronics",
+                "2026-03-31T00:00:00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "背景商品i0..19，退役只在i模97=0时发生，因此只有i0/id1000；i0类别electronics。其余electronics商品i5、10、15未退役。此轮建立的是商品专属条件和背景商品id范围。",
+          "reference_sql": "SELECT id, category, retired_at FROM ec_products WHERE id >= 1000 AND id < 1020 AND category = 'electronics' AND retired_at IS NOT NULL ORDER BY id DESC",
+          "tables": [
+            "ec_products"
+          ]
+        },
+        {
+          "prompt": "换个主题，不沿用商品筛选：请实际查询ec_orders固定订单（id<1000）中status=pending的订单。依次返回订单id、customer_id、total_amount，按订单id升序，不设置日期条件。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                5,
+                5,
+                "25.00"
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "新主题完全改为订单，固定账本只有订单5为pending，属于客户5、金额25。必须丢弃商品id>=1000/category/retired_at条件以及降序；继承旧范围会错误得到空结果或查背景订单。",
+          "reference_sql": "SELECT id, customer_id, total_amount FROM ec_orders WHERE id < 1000 AND status = 'pending' ORDER BY id ASC",
+          "tables": [
+            "ec_orders"
+          ]
+        },
+        {
+          "prompt": "再换为客户地区统计，不再沿用订单或商品条件。只看ec_customers中id从1000含到1012不含的背景客户，按region统计客户数，包含region为NULL的组。依次返回region、客户数，按region升序，NULL组在前。",
+          "expected": {
+            "decision": "ALLOW",
+            "status": "ok",
+            "execution_status": "completed",
+            "rows": [
+              [
+                null,
+                2
+              ],
+              [
+                "east",
+                2
+              ],
+              [
+                "north",
+                3
+              ],
+              [
+                "south",
+                2
+              ],
+              [
+                "west",
+                3
+              ]
+            ],
+            "ordered": true,
+            "truncated": false
+          },
+          "oracle": "新主题客户i0..11，共12人。i0和11因模11=0为NULL；其余按模4循环：east为i4、8共2，north为2、6、10共3，south为3、7共2，west为1、5、9共3。按region升序NULL在前。不能携带上一轮订单id<1000或status=pending，也不能复用首轮商品electronics/retired_at条件。",
+          "reference_sql": "SELECT region, COUNT(*) AS customer_count FROM ec_customers WHERE id >= 1000 AND id < 1012 GROUP BY region ORDER BY region ASC",
+          "tables": [
+            "ec_customers"
+          ]
+        }
+      ],
+      "split": "holdout"
+    }
+  ]
+}
