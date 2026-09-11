@@ -1,0 +1,24 @@
+name: db-agent-changes
+services:
+  mysql:
+    image: mysql:8.4.11@sha256:3466ba4a4828aa8d46fb7c3bc16b67b781c98413cf4ea0fac6feaa6e881faa26
+    ports:
+      - "127.0.0.1:13316:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${CHANGE_ROOT_PASSWORD:?Required independent root password}
+      MYSQL_ROOT_HOST: localhost
+      CHANGE_READER_PASSWORD: ${CHANGE_READER_PASSWORD:?Required independent reader password}
+      CHANGE_PASSWORD: ${CHANGE_PASSWORD:?Required independent change password}
+    command: [--local-infile=OFF, --max-connections=20, --innodb-flush-log-at-trx-commit=1]
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$${CHANGE_PASSWORD}" mysql --protocol=TCP -h127.0.0.1 -udb_agent_changer db_agent_changes -e "SELECT 1" >/dev/null 2>&1']
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    cpus: 1.0
+    mem_limit: 1g
+volumes:
+  mysql_data:

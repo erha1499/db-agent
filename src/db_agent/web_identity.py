@@ -10,6 +10,7 @@ import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -47,6 +48,8 @@ class Identity(BaseModel):
     password_hash: str = Field(pattern=r"^scrypt-v1\$[a-f0-9]{32}\$[a-f0-9]{64}$")
     enabled: bool = True
     allowed_tables: list[str] = Field(max_length=100)
+    change_targets: list[Literal["local_inventory"]] = Field(default_factory=list, max_length=1)
+    change_approve: bool = False
     model_enabled: bool = False
     model_tables: list[str] = Field(default_factory=list, max_length=100)
 

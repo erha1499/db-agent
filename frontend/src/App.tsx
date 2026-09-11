@@ -39,6 +39,7 @@ import { api, message } from './api';
 import ResultDelivery from './ResultDelivery';
 import AuthGate from './AuthGate';
 import KnowledgePanel from './KnowledgePanel';
+import ChangesPanel from './ChangesPanel';
 import type {
   AppStatus,
   Artifact,
@@ -702,6 +703,7 @@ function Workspace({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [schemaOpen, setSchemaOpen] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
+  const [changesOpen, setChangesOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [dialog, setDialog] = useState<'rename' | 'delete' | null>(null);
   const [dialogTarget, setDialogTarget] = useState<Conversation | null>(null);
@@ -1160,7 +1162,10 @@ function Workspace({
               <Database size={14} />
               {status?.database || '未配置数据库'}
             </span>
-            <span className="readonly-badge">只读</span>
+            <span className="readonly-badge">查询只读</span>
+            <button className="secondary-button" onClick={() => setChangesOpen(true)}>
+              受控变更
+            </button>
             <button className="icon-button" aria-label="退出登录" onClick={logout} title="退出登录">
               <LogOut size={17} />
             </button>
@@ -1447,6 +1452,11 @@ function Workspace({
               inputRef.current?.focus();
             }}
           />
+        </Dialog>
+      )}
+      {changesOpen && (
+        <Dialog title="受控变更" className="knowledge-dialog" onClose={() => setChangesOpen(false)}>
+          <ChangesPanel />
         </Dialog>
       )}
       {identityOpen && (
