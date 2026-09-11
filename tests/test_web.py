@@ -503,7 +503,8 @@ def test_saved_result_analysis_export_restart_and_no_service_calls(app, monkeypa
         pytest.fail('Delivery must not call the model or database')
 
     monkeypatch.setattr(web, 'run_agent_observed', unexpected)
-    monkeypatch.setattr(web.MetadataConnector, 'execute_checked', unexpected)
+    from db_agent.db import MetadataConnector
+    monkeypatch.setattr(MetadataConnector, 'execute_checked', unexpected)
     with TestClient(app, base_url='http://127.0.0.1:8000', headers=HEADERS) as client:
         snapshot = client.get(path).json()
         assert snapshot['report'] == run['queries'][0]['report']

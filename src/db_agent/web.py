@@ -28,9 +28,10 @@ from db_agent.config import (
     load_query_settings,
     load_settings,
 )
+from db_agent.connectors import create_connector
 from db_agent.conversation_context import conversation_prompt
 from db_agent.conversations import ConversationStore, now, source_scope
-from db_agent.db import DatabaseError, MetadataConnector
+from db_agent.db import DatabaseError
 from db_agent.knowledge import KnowledgeDraft, KnowledgeStore
 from db_agent.presentation import has_complete_query_results
 from db_agent.query import QueryService
@@ -147,11 +148,11 @@ class WebRuntime:
                 self.scope = hashlib.sha256(json.dumps([
                     self.scope, identity.username, service.generation,
                 ]).encode()).hexdigest()
-            self.connector = MetadataConnector(
+            self.connector = create_connector(
                 db_settings, authorization_check=guard,
                 knowledge_scope=self.scope if service else None,
             )
-            self.model_connector = MetadataConnector(
+            self.model_connector = create_connector(
                 db_settings.model_copy(update={"allowed_tables": tuple(identity.model_tables)})
                 if identity else db_settings, authorization_check=guard,
                 knowledge_scope=self.scope if service else None,
@@ -210,7 +211,7 @@ class WebRuntime:
             "结果已截断，只分析已返回部分，不能推断原查询总量；服务器语句状态未确认。"
             if data["truncated"] else "当前 SQL 的结果已完整返回，不表示整个数据库的完整数据。",
             "此文件是保存时的结果快照，取回与分析不会重新查询数据库，也不会调用模型。",
-            "DATETIME 无时区；查询会话为 +00:00 时 TIMESTAMP 按 UTC 返回。",
+            "无时区日期时间不附加时区；查询会话为 +00:00 时带时区类型按 UTC 返回。",
         ]
         if run.get("missing_query_reports"):
             notes.append("本轮还有查询调用缺少报告；本文件只包含此结果，不能代表整轮任务完成。")
@@ -384,7 +385,7 @@ class WebService:
                 model = None
                 settings = None
             fingerprint = hashlib.sha256(json.dumps([
-                identities.model_dump(mode="json"),
+                identities.model_dump(mode="json"), db_settings.kind,
                 db_settings.model_dump(mode="json", exclude={"password"}), model,
                 hashlib.sha256(db_settings.password.get_secret_value().encode()).hexdigest(),
                 analysis.model_dump(mode="json"), query.model_dump(mode="json"),

@@ -57,3 +57,5 @@ node_modules/
 .vscode/
 *.swp
 *.swo
+
+!.env.postgres.example

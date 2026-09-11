@@ -33,7 +33,7 @@ class QueryService:
             "query_id": uuid4().hex,
             "checked_at": datetime.now(UTC).isoformat(),
             "database": self.connector.database,
-            "policy_version": POLICY_VERSION,
+            "policy_version": getattr(self.connector, "policy_version", POLICY_VERSION),
             "status": "error",
             "decision": "UNKNOWN",
             "execution_status": "unknown",
@@ -47,7 +47,7 @@ class QueryService:
                 "预检结论与查询结果分别判断；ALLOW 不代表查询成功。",
                 "截断结果不能当作完整集合，返回行数不是原查询总行数。",
                 "result_bytes 是结果 JSON 大小，不是数据库扫描或网络流量。",
-                "金额和超大整数保留为字符串；DATETIME 无时区，TIMESTAMP 按会话 UTC 返回。",
+                "金额和超大整数保留为字符串；无时区日期时间不附加时区，带时区类型按会话UTC返回。",
             ],
         }
         try:
@@ -104,7 +104,8 @@ class QueryService:
                 code=response["error"]["code"] if response["error"] else None,
                 operation="execute_query", call_id=response["query_id"],
                 result_id=response.get("result_id"), decision=response["decision"],
-                execution_status=response["execution_status"], policy_version=POLICY_VERSION,
+                execution_status=response["execution_status"],
+                policy_version=response["policy_version"],
                 sql_fingerprint=response["sql_fingerprint"],
                 rule_ids=[finding["rule_id"] for finding in response["findings"]],
                 row_count=response["result"]["row_count"] if response["result"] else None,

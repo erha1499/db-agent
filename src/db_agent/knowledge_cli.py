@@ -6,7 +6,7 @@ import json
 import sys
 
 from db_agent.config import load_analysis_settings, load_database_settings
-from db_agent.db import MetadataConnector
+from db_agent.connectors import create_connector
 from db_agent.knowledge import MAX_DOCUMENT_BYTES, KnowledgeError, KnowledgeStore
 
 
@@ -28,7 +28,7 @@ def add_knowledge_commands(commands):
 
 async def run_knowledge_command(args: argparse.Namespace) -> dict | list:
     store = KnowledgeStore()
-    connector = MetadataConnector(load_database_settings())
+    connector = create_connector(load_database_settings())
     limits = load_analysis_settings()
     if args.knowledge_command == "create":
         try:

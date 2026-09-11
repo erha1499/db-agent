@@ -374,3 +374,130 @@ def test_total_query_size_is_bounded_before_fragment_parsing():
     data["query"]["projections"] = ["'" + "长" * 1000 + "' AS text_value"] * 10
     with pytest.raises(IntentError):
         compile_intent(QueryIntent.model_validate(data), REQUEST, SCHEMAS)
+
+
+def postgres_schemas():
+    return [{**deepcopy(value), "dialect": "postgres", "schema": "business"}
+            for value in SCHEMAS]
+
+
+@pytest.mark.parametrize("dialect", ["mysql", "postgres"])
+def test_conditional_aggregate_contract_keeps_null_and_branch_semantics(dialect):
+    data = payload()
+    data["query"].update(
+        projections=["COUNT(CASE WHEN status = 'paid' THEN 1 END) AS paid_count",
+                     "SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS paid_amount"],
+        source={"table": "orders", "alias": None}, joins=[], where=None,
+        group_by=[], having=None, order_by=[],
+    )
+    schemas = postgres_schemas() if dialect == "postgres" else SCHEMAS
+    compiled = compile_intent(
+        QueryIntent.model_validate(data), "分别返回已支付订单数和金额", schemas, dialect=dialect,
+    )
+    tree = parse_one(compiled, read=dialect)
+    cases = list(tree.find_all(exp.Case))
+    assert len(cases) == 2 and cases[0].args.get("default") is None
+    assert cases[1].args["default"].this == "0"
+    assert select_candidate(compiled, compiled, schemas, dialect=dialect) == (
+        compiled, "AST_MATCH",
+    )
+    changed = compiled.replace("THEN 1 END", "THEN 1 ELSE 0 END")
+    assert select_candidate(changed, compiled, schemas, dialect=dialect) == (
+        compiled, "AST_DIFFERENT",
+    )
+
+
+@pytest.mark.parametrize("descending", [False, True])
+def test_postgres_compilation_preserves_native_null_sort_order(descending):
+    data = payload()
+    data["query"]["order_by"][0]["descending"] = descending
+    schemas = postgres_schemas()
+    compiled = compile_intent(QueryIntent.model_validate(data), REQUEST, schemas,
+                              dialect="postgres")
+    assert "`" not in compiled and '"customers"' in compiled
+    ordered = parse_one(compiled, read="postgres").args["order"].expressions[0]
+    assert ordered.args["nulls_first"] is descending
+    candidate = compiled.replace('"', '')
+    assert select_candidate(candidate, compiled, schemas, dialect="postgres") == (
+        candidate, "AST_MATCH",
+    )
+    changed = compiled + (" NULLS LAST" if descending else " NULLS FIRST")
+    assert select_candidate(changed, compiled, schemas, dialect="postgres") == (
+        compiled, "AST_DIFFERENT",
+    )
+
+
+def test_postgres_case_sensitive_metadata_and_output_aliases():
+    schemas = [{"database": "db_agent", "schema": "business", "dialect": "postgres",
+                "table": "Orders", "columns": [{"name": "Id"}, {"name": "id"}]}]
+    data = payload()
+    data["query"].update(
+        projections=['"Id" AS "Chosen"'], source={"table": "Orders", "alias": None},
+        joins=[], where=None, group_by=[], having=None,
+        order_by=[{"expression": '"Chosen"', "descending": False}],
+    )
+    compiled = compile_intent(QueryIntent.model_validate(data), "查询大写 Id 列", schemas,
+                              dialect="postgres")
+    assert 'FROM "Orders"' in compiled
+    assert select_candidate(compiled.replace('"Chosen"', 'chosen'), compiled, schemas,
+                            dialect="postgres")[1] == "AST_DIFFERENT"
+    assert select_candidate(compiled.replace('"Id"', 'ID'), compiled, schemas,
+                            dialect="postgres")[1] == "AST_DIFFERENT"
+    assert select_candidate(compiled.replace('"Orders"', 'ORDERS'), compiled, schemas,
+                            dialect="postgres")[1] == "NOT_COMPARABLE"
+
+
+def test_postgres_unquoted_identifiers_fold_before_binding_and_comparison():
+    sql = "SELECT O.ID FROM BUSINESS.ORDERS AS O ORDER BY O.ID"
+    contract = 'SELECT "id" FROM "orders" ORDER BY "id" ASC NULLS LAST'
+    assert select_candidate(sql, contract, postgres_schemas(), dialect="postgres") == (
+        sql, "AST_MATCH",
+    )
+
+
+@pytest.mark.parametrize("change", ["missing_schema", "mixed_schema", "mixed_database",
+                                    "mixed_dialect", "wrong_dialect", "long_identifier"])
+def test_postgres_metadata_scope_must_be_complete_and_consistent(change):
+    schemas = postgres_schemas()
+    if change == "missing_schema":
+        schemas[0].pop("schema")
+    elif change == "mixed_schema":
+        schemas[0]["schema"] = "other"
+    elif change == "mixed_database":
+        schemas[0]["database"] = "other"
+    elif change == "mixed_dialect":
+        schemas[0]["dialect"] = "mysql"
+    elif change == "wrong_dialect":
+        schemas[0]["dialect"] = "postgresql"
+    else:
+        schemas[0]["columns"][0]["name"] = "a" * 64
+    with pytest.raises(IntentError):
+        compile_intent(intent(), REQUEST, schemas, dialect="postgres")
+
+
+@pytest.mark.parametrize("clause,fragment", [
+    ("having", "order_count = 0"), ("order_by", "order_count + 1"),
+    ("group_by", "order_count + 1"),
+])
+def test_postgres_does_not_assume_mysql_output_alias_visibility(clause, fragment):
+    data = payload()
+    if clause == "having":
+        data["query"][clause] = {"sql": fragment}
+    elif clause == "order_by":
+        data["query"][clause] = [{"expression": fragment, "descending": False}]
+    else:
+        data["query"][clause] = [fragment]
+    with pytest.raises(IntentError):
+        compile_intent(QueryIntent.model_validate(data), REQUEST, postgres_schemas(),
+                       dialect="postgres")
+
+
+def test_postgres_prompt_uses_the_trusted_dialect_and_allows_only_searched_case():
+    messages = intent_messages("查询已支付金额", postgres_schemas(), dialect="postgres")
+    assert "PostgreSQL" in messages[0].content
+    assert "CASE WHEN" in messages[0].content
+    assert "NULLS LAST" in messages[0].content
+    assert "IF" in messages[0].content
+    assert "权限" in messages[0].content
+    with pytest.raises(IntentError):
+        intent_messages("request", [], dialect="sqlite")

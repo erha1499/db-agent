@@ -76,7 +76,8 @@ columns 与 referenced_columns 按位置一一对应。业务按该关系关联�
 所有建议中的 SQL 也须符合支持范围，不使用未绑定的 :name 或 ? 占位符。
 自行生成的查询仅支持单个 SELECT、显式 INNER/LEFT JOIN ON 和基础表达式。
 表达式使用基础算术、比较、AND/OR/NOT、IN、BETWEEN、LIKE、IS NULL，
-不使用 CASE/IF、子查询（包括 EXISTS/NOT EXISTS）、CTE、UNION、窗口、
+支持 searched CASE WHEN 条件表达式；不使用 IF 函数、simple CASE、
+子查询（包括 EXISTS/NOT EXISTS）、CTE、UNION、窗口、
 DISTINCT（含聚合内 DISTINCT）。
 排除匹配对象可用完整关联的 LEFT JOIN 与右表非空键 IS NULL；必须保持用户要求的集合和计数，
 不能简单删除去重或排除条件来凑可执行 SQL。无法在支持范围完整表达时明确说明限制。
@@ -207,6 +208,7 @@ class RuntimeMiddleware(AgentMiddleware):
             response = await self.reviewer.ainvoke(review_messages(
                 self.prompt, sql, schemas, conversation_mode=self.conversation_mode,
                 knowledge=self.knowledge.payload if self.knowledge else None,
+                dialect=getattr(self.connector, "dialect", "mysql"),
             ))
             review = parse_review(response)
             self.semantic_reviews.append({"sql": sql, **review.model_dump()})
@@ -243,6 +245,7 @@ class RuntimeMiddleware(AgentMiddleware):
             response = await self.interpreter.ainvoke(intent_messages(
                 self.prompt, schemas, conversation_mode=self.conversation_mode,
                 knowledge=self.knowledge.payload if self.knowledge else None,
+                dialect=getattr(self.connector, "dialect", "mysql"),
             ))
             intent = parse_intent(response)
             self.query_intents.append({
@@ -323,8 +326,12 @@ class RuntimeMiddleware(AgentMiddleware):
                 "SEMANTIC_UNCERTAIN", "需求存在未解决的口径或结构问题，业务 SQL 未执行。",
             )
         try:
-            contract_sql = compile_intent(intent, self.prompt, schemas)
-            selected_sql, selection = select_candidate(sql, contract_sql, schemas)
+            contract_sql = compile_intent(
+                intent, self.prompt, schemas, dialect=getattr(self.connector, "dialect", "mysql"),
+            )
+            selected_sql, selection = select_candidate(
+                sql, contract_sql, schemas, dialect=getattr(self.connector, "dialect", "mysql"),
+            )
         except IntentError:
             raise DatabaseError(
                 "QUERY_INTENT_INVALID", "需求合同不能完整转换为受支持的 SQL，业务 SQL 未执行。",
@@ -564,7 +571,15 @@ async def run_agent_observed(
                     model=model,
                     tools=tools,
                     system_prompt=(
-                        SYSTEM_PROMPT + (KNOWLEDGE_RULES if knowledge else "")
+                        SYSTEM_PROMPT + "\n可信目标 SQL 方言："
+                        + getattr(connector, "dialect", "mysql")
+                        + "；必须使用目标方言，不能切换数据源。"
+                        + ("\nPostgreSQL：标识符用双引号或简单小写名称；日期边界用普通"
+                           "单引号ISO字符串，不加DATE/TIMESTAMP/TIMESTAMPTZ类型前缀，"
+                           "不使用CAST或::类型转换。比较会由实际日期列确定类型；"
+                           "带时区边界明确UTC或偏移，无时区列不凭空加时区。"
+                           if getattr(connector, "dialect", "mysql") == "postgres" else "")
+                        + (KNOWLEDGE_RULES if knowledge else "")
                         + (CONVERSATION_RULES if conversation_mode else "")
                         + "\n授权表名候选（仅配置，存在性、类型和结构未验证）：\n"
                         + json.dumps({

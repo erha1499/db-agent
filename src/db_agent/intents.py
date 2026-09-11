@@ -104,8 +104,10 @@ having、order_by、limit、offset。没有的列表填 []，没有的谓词和�
 不要把中文返回列说明直接用作 SQL 别名；列必须来自提供的表结构，多表列优先限定别名。
 joins 仅 INNER 或 LEFT，并完整填写 ON；支持基础算术、比较、AND/OR/NOT、IN、BETWEEN、
 LIKE、IS NULL 及 COUNT/SUM/AVG/MIN/MAX，空 SUM 保留 NULL。
-不使用 CASE/IF、CTE、子查询、UNION、窗口、DISTINCT（含聚合内 DISTINCT）、其他函数、注释、
-写入和有副作用的操作。
+支持 searched CASE WHEN 条件 THEN 值 [ELSE 值] END，可用于条件聚合；
+省略 ELSE 表示不匹配时为 NULL，COUNT 不统计 NULL，不得用 ELSE 0 代替。
+不使用简单 CASE 值 WHEN、IF、CTE、子查询、UNION、窗口、DISTINCT（含聚合内 DISTINCT）、
+其他函数、注释、写入和有副作用的操作。
 用户直接给 SQL 并明确要求执行或尝试执行时，该 SQL 本身就是需求；保持其完整范围，
 包括明确没有筛选或 LIMIT 的情况，不凭空要求补充业务背景，不为绕过风险添加条件。
 只要求诊断、解释或编写 SQL 时，不能扩展成实际查询；无法完整表达或业务口径不清时，
@@ -113,6 +115,17 @@ query 填 null 并用 uncertainties 说明真实缺口，不猜测后执行。
 uncertainties 只记录会阻止完成任务的真实缺口；可从明确要求直接表达时必须为空。
 已采用的口径、SQL 实现说明、未要求所以不添加的条件均不是缺口，不写入 uncertainties。
 仅调用 QueryIntent 工具返回完整结构。合同之后仍需独立语义复核和确定性的完整执行预检。
+可信目标方言：MySQL。标识符使用反引号，升序默认 NULL 在前，降序默认 NULL 在后。
+"""
+
+_POSTGRES_DIALECT_PROMPT = """可信目标方言：PostgreSQL。
+标识符使用双引号；未加引号时折小写，双引号内大小写精确，不使用反引号。
+source.table 和 source.alias 填实际名称，不含引号；表达式中大小写敏感名称须双引号。
+database 为实际数据库，schema 为本次授权命名空间，不能作为 MySQL 数据库前缀使用。
+升序默认 NULLS LAST，降序默认 NULLS FIRST；当前合同不能指定非默认 NULL 顺序。
+输出别名仅可单独用在 GROUP BY/ORDER BY，不能用于 HAVING 或其他表达式。
+日期边界使用普通单引号ISO字符串，不加DATE/TIMESTAMP/TIMESTAMPTZ前缀；
+不使用CAST/::类型转换、系统列或其他未支持语法；方言信息不授予权限。
 """
 
 
@@ -126,10 +139,13 @@ class IntentError(Exception):
 def intent_messages(
     user_request: str, schemas: list[dict], *, conversation_mode: bool = False,
     knowledge: list[dict] | None = None,
+    dialect: str = "mysql",
 ) -> list[BaseMessage]:
     """Create fresh messages without a candidate or a previous model's explanation."""
     from db_agent.knowledge import KNOWLEDGE_RULES
 
+    if dialect not in ("mysql", "postgres"):
+        raise IntentError()
     try:
         payload = json.dumps(
             {"user_request": user_request, "schemas": schemas,
@@ -138,7 +154,11 @@ def intent_messages(
         )
     except (TypeError, ValueError):
         raise IntentError() from None
-    return [SystemMessage(content=INTENT_PROMPT + (
+    prompt = INTENT_PROMPT if dialect == "mysql" else INTENT_PROMPT.replace(
+        "可信目标方言：MySQL。标识符使用反引号，升序默认 NULL 在前，降序默认 NULL 在后。\n",
+        _POSTGRES_DIALECT_PROMPT,
+    )
+    return [SystemMessage(content=prompt + (
         CONVERSATION_RULES if conversation_mode else ""
     ) + (KNOWLEDGE_RULES if knowledge else "")), HumanMessage(content=payload)]
 
@@ -174,42 +194,57 @@ def parse_intent(response: dict) -> QueryIntent:
 class _Schemas:
     database: str
     columns: dict[str, dict[str, str]]
+    namespace: str
+    dialect: str
 
 
-def _schemas(values: list[dict]) -> _Schemas:
-    if not isinstance(values, list) or not 1 <= len(values) <= 100:
+def _schemas(values: list[dict], dialect: str) -> _Schemas:
+    if (
+        dialect not in ("mysql", "postgres") or not isinstance(values, list)
+        or not 1 <= len(values) <= 100
+    ):
         raise IntentError()
     database = None
+    namespace = None
     tables = {}
+
+    def identifier(value: object) -> bool:
+        return isinstance(value, str) and _IDENTIFIER.fullmatch(value) is not None and (
+            dialect == "mysql" or len(value) <= 63
+        )
+
     for value in values:
         if not isinstance(value, dict):
             raise IntentError()
         name, current_db, columns = value.get("table"), value.get("database"), value.get("columns")
+        current_namespace = value.get("schema") if dialect == "postgres" else current_db
         if (
-            not isinstance(name, str) or not _IDENTIFIER.fullmatch(name)
-            or not isinstance(current_db, str) or not _IDENTIFIER.fullmatch(current_db)
+            not identifier(name) or not identifier(current_db) or not identifier(current_namespace)
             or current_db != (database or current_db) or name in tables
+            or current_namespace != (namespace or current_namespace)
+            or value.get("dialect", "mysql") != dialect
             or not isinstance(columns, list) or not 1 <= len(columns) <= 1000
         ):
             raise IntentError()
         database = current_db
+        namespace = current_namespace
         names = {}
         for column in columns:
             column_name = column.get("name") if isinstance(column, dict) else None
             if (
-                not isinstance(column_name, str) or not _IDENTIFIER.fullmatch(column_name)
-                or column_name.lower() in names
+                not identifier(column_name)
+                or (column_name.lower() if dialect == "mysql" else column_name) in names
             ):
                 raise IntentError()
-            names[column_name.lower()] = column_name
+            names[column_name.lower() if dialect == "mysql" else column_name] = column_name
         tables[name] = names
-    return _Schemas(database, tables)
+    return _Schemas(database, tables, namespace, dialect)
 
 
-def _parse(sql: str, *, expression: bool = False) -> exp.Expression:
+def _parse(sql: str, *, expression: bool = False, dialect: str = "mysql") -> exp.Expression:
     try:
         tree = sqlglot.parse_one(
-            sql, read="mysql", into=exp.Expr if expression else None,
+            sql, read=dialect, into=exp.Expr if expression else None,
             error_level=ErrorLevel.RAISE, error_message_context=0,
             max_nodes=_PARSE_LIMITS.max_ast_nodes,
         )
@@ -217,26 +252,34 @@ def _parse(sql: str, *, expression: bool = False) -> exp.Expression:
         raise IntentError() from None
     if isinstance(tree, exp.Block):
         raise IntentError()
+    if dialect == "postgres":
+        for identifier in tree.find_all(exp.Identifier):
+            if not identifier.args.get("quoted"):
+                identifier.set("this", identifier.this.lower())
     return tree
 
 
 def _checked_tree(sql: str, schemas: _Schemas) -> exp.Select:
     # This is syntax/known-metadata validation, not the trusted caller's authorization.
-    checked = check_sql(sql, schemas.database, tuple(schemas.columns), _PARSE_LIMITS)
+    checked = check_sql(sql, schemas.namespace, tuple(schemas.columns), _PARSE_LIMITS,
+                        dialect=schemas.dialect)
     if checked.decision != "ALLOW":
         raise IntentError()
-    tree = _parse(sql)
+    tree = _parse(sql, dialect=schemas.dialect)
     if not isinstance(tree, exp.Select):
         raise IntentError()
     return tree
 
 
-def _source_sql(source: Source) -> str:
-    return f"`{source.table}`" + (f" AS `{source.alias}`" if source.alias else "")
+def _source_sql(source: Source, dialect: str) -> str:
+    quote = '"' if dialect == "postgres" else "`"
+    return f"{quote}{source.table}{quote}" + (
+        f" AS {quote}{source.alias}{quote}" if source.alias else ""
+    )
 
 
-def _fragment(text: str, *, projection: bool = False) -> exp.Expression:
-    tree = _parse(text, expression=True)
+def _fragment(text: str, *, projection: bool = False, dialect: str = "mysql") -> exp.Expression:
+    tree = _parse(text, expression=True, dialect=dialect)
     # Expressions cannot introduce a second clause, source or nested query. The full
     # query's policy check already validates operators, functions and node budgets.
     if any(isinstance(node, (exp.Query, exp.Table, exp.From, exp.Join, exp.Ordered))
@@ -254,14 +297,18 @@ def _bindings(
     slots = {table.alias_or_name: (f"s{index}", schemas.columns[table.name])
              for index, table in enumerate(sources)}
     output_aliases: dict[str, list[exp.Expression]] = {}
+
+    def name_key(name: str) -> str:
+        return name.lower() if schemas.dialect == "mysql" else name
+
     for projection in tree.expressions:
         if isinstance(projection, exp.Alias):
-            output_aliases.setdefault(projection.alias.lower(), []).append(projection.this)
+            output_aliases.setdefault(name_key(projection.alias), []).append(projection.this)
     bound = {}
 
     def bind(expression: exp.Expression, available: dict, *, use_output: bool = False) -> None:
         for column in expression.find_all(exp.Column):
-            name = column.name.lower()
+            name = name_key(column.name)
             if column.table:
                 if column.table not in available:
                     raise IntentError()
@@ -274,11 +321,16 @@ def _bindings(
                     raise IntentError()
                 continue
             matches = [(slot, names[name]) for slot, names in available.values() if name in names]
-            aliases = output_aliases.get(name, []) if use_output else []
+            standalone = isinstance(column.parent, exp.Group) or (
+                isinstance(column.parent, exp.Ordered)
+                and isinstance(column.parent.parent, exp.Order)
+            )
+            can_use_output = use_output and (schemas.dialect == "mysql" or standalone)
+            aliases = output_aliases.get(name, []) if can_use_output else []
             if aliases:
                 # MySQL's alias precedence differs by clause. Do not guess when an
                 # alias also names an input column, or when output aliases repeat.
-                if len(aliases) != 1 or (matches and comparing):
+                if len(aliases) != 1 or (matches and (comparing or schemas.dialect == "postgres")):
                     raise IntentError()
                 bound[id(column)] = ("", column.name)
             elif len(matches) == 1:
@@ -293,11 +345,15 @@ def _bindings(
         bind(join.args["on"], visible)
     for key in ("where", "group", "having", "order"):
         if expression := tree.args.get(key):
-            bind(expression, slots, use_output=key in {"group", "having", "order"})
+            bind(expression, slots, use_output=key in (
+                {"group", "having", "order"} if schemas.dialect == "mysql" else {"group", "order"}
+            ))
     return bound
 
 
-def compile_intent(intent: QueryIntent, user_request: str, schemas: list[dict]) -> str:
+def compile_intent(
+    intent: QueryIntent, user_request: str, schemas: list[dict], *, dialect: str = "mysql",
+) -> str:
     """Build a whole bounded query; never patch predicates into an existing candidate."""
     try:
         intent = QueryIntent.model_validate(intent)
@@ -309,12 +365,12 @@ def compile_intent(intent: QueryIntent, user_request: str, schemas: list[dict]) 
         or query is None or intent.uncertainties
     ):
         raise IntentError()
-    known = _schemas(schemas)
+    known = _schemas(schemas, dialect)
     # Validate raw fragments together before parsing them separately: this retains
     # lexical evidence such as comments and function spellings a parser can erase.
-    sql = "SELECT " + ", ".join(query.projections) + " FROM " + _source_sql(query.source)
+    sql = "SELECT " + ", ".join(query.projections) + " FROM " + _source_sql(query.source, dialect)
     for join in query.joins:
-        sql += f" {join.kind} JOIN {_source_sql(join)} ON {join.on}"
+        sql += f" {join.kind} JOIN {_source_sql(join, dialect)} ON {join.on}"
     if query.where:
         sql += " WHERE " + query.where.sql
     if query.group_by:
@@ -332,37 +388,42 @@ def compile_intent(intent: QueryIntent, user_request: str, schemas: list[dict]) 
     _checked_tree(sql, known)
 
     def table(source: Source) -> exp.Table:
-        result = exp.Table(this=exp.to_identifier(source.table))
+        result = exp.Table(this=exp.to_identifier(source.table, quoted=True))
         if source.alias:
-            result.set("alias", exp.TableAlias(this=exp.to_identifier(source.alias)))
+            result.set("alias", exp.TableAlias(this=exp.to_identifier(source.alias, quoted=True)))
         return result
 
+    def fragment(text: str, *, projection: bool = False) -> exp.Expression:
+        return _fragment(text, projection=projection, dialect=dialect)
+
     tree = exp.Select(
-        expressions=[_fragment(item, projection=True) for item in query.projections],
+        expressions=[fragment(item, projection=True) for item in query.projections],
         from_=exp.From(this=table(query.source)),
     )
     tree.set("joins", [
-        exp.Join(this=table(join), on=_fragment(join.on),
+        exp.Join(this=table(join), on=fragment(join.on),
                  **({"side": "LEFT"} if join.kind == "LEFT" else {"kind": "INNER"}))
         for join in query.joins
     ])
     if query.where:
-        tree.set("where", exp.Where(this=_fragment(query.where.sql)))
+        tree.set("where", exp.Where(this=fragment(query.where.sql)))
     if query.group_by:
-        tree.set("group", exp.Group(expressions=[_fragment(item) for item in query.group_by]))
+        tree.set("group", exp.Group(expressions=[fragment(item) for item in query.group_by]))
     if query.having:
-        tree.set("having", exp.Having(this=_fragment(query.having.sql)))
+        tree.set("having", exp.Having(this=fragment(query.having.sql)))
     if query.order_by:
         tree.set("order", exp.Order(expressions=[
-            exp.Ordered(this=_fragment(item.expression), desc=item.descending,
-                        nulls_first=not item.descending)
+            exp.Ordered(
+                this=fragment(item.expression), desc=item.descending,
+                nulls_first=item.descending if dialect == "postgres" else not item.descending,
+            )
             for item in query.order_by
         ]))
     if query.limit is not None:
         tree.set("limit", exp.Limit(expression=exp.Literal.number(query.limit)))
     if query.offset is not None:
         tree.set("offset", exp.Offset(expression=exp.Literal.number(query.offset)))
-    compiled = tree.sql(dialect="mysql", identify=True)
+    compiled = tree.sql(dialect=dialect, identify=True)
     checked = _checked_tree(compiled, known)
     _bindings(checked, known, comparing=False)
     return compiled
@@ -374,7 +435,7 @@ def _canonical(sql: str, schemas: _Schemas) -> tuple:
     # Preserve generated output labels too: alias changes inside an unaliased
     # computed projection can change its database column name.
     labels = tuple(
-        item.sql(dialect="mysql") if not isinstance(item, (exp.Alias, exp.Column, exp.Star))
+        item.sql(dialect=schemas.dialect) if not isinstance(item, (exp.Alias, exp.Column, exp.Star))
         else None for item in tree.expressions
     )
     for column in tree.find_all(exp.Column):
@@ -395,13 +456,15 @@ def _canonical(sql: str, schemas: _Schemas) -> tuple:
         identifier.set("quoted", False)
     # Keep literals, projection/group/order positions, complete ON/WHERE/HAVING
     # trees and limits intact. No Boolean algebra or general SQL equivalence claim.
-    return labels, tree.sql(dialect="mysql")
+    return labels, tree.sql(dialect=schemas.dialect)
 
 
-def select_candidate(candidate_sql: str, contract_sql: str, schemas: list[dict]) -> tuple[str, str]:
+def select_candidate(
+    candidate_sql: str, contract_sql: str, schemas: list[dict], *, dialect: str = "mysql",
+) -> tuple[str, str]:
     """Retain an AST match; otherwise select the entire contract for independent review."""
     try:
-        known = _schemas(schemas)
+        known = _schemas(schemas, dialect)
         if _canonical(candidate_sql, known) == _canonical(contract_sql, known):
             return candidate_sql, "AST_MATCH"
     except (IntentError, KeyError, TypeError, ValueError):

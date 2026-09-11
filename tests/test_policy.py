@@ -220,3 +220,106 @@ def test_parser_failure_does_not_disclose_input_or_exception(monkeypatch, caplog
     result = check("SELECT 'synthetic-secret-in-sql' FROM orders", limits)
     assert result.decision == "UNKNOWN"
     assert "synthetic-secret" not in repr(result) + caplog.text
+
+
+@pytest.mark.parametrize("dialect,database", [("mysql", "db_agent"), ("postgres", "public")])
+@pytest.mark.parametrize("expression", [
+    "COUNT(CASE WHEN status = 'paid' THEN 1 END)",
+    "SUM(CASE WHEN status = 'paid' THEN total_amount ELSE 0 END)",
+    "SUM(CASE WHEN (status IS NULL) THEN total_amount ELSE NULL END)",
+    "CASE WHEN id < 1 THEN NULL WHEN id = 1 THEN 2 ELSE 3 END",
+    "CASE WHEN id > 0 THEN CASE WHEN status IS NULL THEN 1 END ELSE 0 END",
+])
+def test_searched_case_subset_preserves_full_expression(expression, dialect, database, limits):
+    result = check_sql(f"SELECT {expression} FROM orders", database, ("orders",),
+                       limits, dialect=dialect)
+    assert result.decision == "ALLOW"
+    assert result.tables == ("orders",)
+
+
+@pytest.mark.parametrize("dialect", ["mysql", "postgres"])
+@pytest.mark.parametrize("expression", [
+    "CASE status WHEN 'paid' THEN 1 ELSE 0 END", "IF(id > 0, 1, 0)",
+    "CASE WHEN id > 0 THEN IF(id > 1, 2, 1) ELSE 0 END",
+    "CASE WHEN id > 0 THEN COALESCE(total_amount, 0) END",
+    "CASE WHEN id > 0 THEN private_function(id) END",
+    "CASE WHEN id > 0 THEN (SELECT id FROM private_table) END",
+    "CASE WHEN id > 0 THEN @secret END",
+    "SUM(CASE WHEN id > 0 THEN 1 END) OVER ()",
+])
+def test_case_is_not_an_escape_from_existing_boundaries(expression, dialect, limits):
+    assert check_sql(f"SELECT {expression} FROM orders", "public", ("orders",),
+                     limits, dialect=dialect).decision != "ALLOW"
+
+
+@pytest.mark.parametrize("sql", [
+    'SELECT "o"."id" FROM "public"."orders" AS "o"',
+    'SELECT PUBLIC.ORDERS.ID FROM PUBLIC.ORDERS',
+    'SELECT O.ID FROM ORDERS O',
+    'SELECT SUM (total_amount) FROM orders',
+    'SELECT id FROM orders ORDER BY id ASC NULLS LAST',
+    'SELECT id FROM orders ORDER BY id DESC NULLS FIRST',
+    'SELECT total_amount / 2, 1 / 2, 1e3, 2.5, .5, 5. FROM orders',
+])
+def test_postgres_lexing_and_identifier_folding(sql, limits):
+    result = check_sql(sql, "public", ("orders",), limits, dialect="postgres")
+    assert result.decision == "ALLOW"
+    assert result.tables == ("orders",)
+
+
+@pytest.mark.parametrize("sql", [
+    'SELECT id FROM "Orders"', 'SELECT id FROM "PUBLIC".orders',
+    'SELECT id FROM other.orders', 'SELECT id FROM app.public.orders',
+    'SELECT orders.id FROM orders AS "Orders"',
+    'SELECT "O".id FROM orders o',
+    'SELECT id FROM "' + "a" * 64 + '"',
+    'SELECT id FROM ' + "a" * 64,
+    'SELECT id FROM `orders`', 'SELECT id::text FROM orders',
+    "SELECT E'abc' FROM orders", "SELECT N'abc' FROM orders",
+    "SELECT B'01' FROM orders", "SELECT $$abc$$ FROM orders",
+    "SELECT $tag$abc$tag$ FROM orders", "SELECT $1 FROM orders",
+    "SELECT id FROM orders WHERE id = %(id)s", "SELECT id FROM orders WHERE id = :id",
+    'SELECT pg_catalog.sum(total_amount) FROM orders',
+    'SELECT "sum"(total_amount) FROM orders',
+    "SELECT id FROM orders FOR SHARE", "SELECT id INTO other FROM orders",
+    "SELECT id FROM orders; SELECT id FROM orders",
+    "SELECT DISTINCT id FROM orders", "SELECT COUNT(DISTINCT id) FROM orders",
+    "SELECT id FROM orders LIMIT 1,2", "SELECT id FROM ONLY orders",
+    "SELECT id FROM orders TABLESAMPLE SYSTEM (1)",
+    "SELECT id FROM orders LIMIT ALL", "SELECT id FROM orders LIMIT NULL",
+    "SELECT 1_000 FROM orders", "SELECT 1.2_3 FROM orders", "SELECT 1e1_2 FROM orders",
+    "SELECT 0x12 FROM orders", "SELECT 0o12 FROM orders", "SELECT 0b11 FROM orders",
+    "SELECT id AS 'Label' FROM orders", "SELECT id FROM orders AS 'o'",
+    "SELECT 'a'\n'b' FROM orders",
+])
+def test_postgres_unsupported_or_unauthorized_raw_forms_fail_closed(sql, limits):
+    assert check_sql(sql, "public", ("orders", "a" * 64), limits,
+                     dialect="postgres").decision != "ALLOW"
+
+
+def test_postgres_quoted_names_remain_case_sensitive(limits):
+    allowed = check_sql('SELECT "Orders"."Id" FROM "Orders"', "public", ("Orders",),
+                        limits, dialect="postgres")
+    denied = check_sql('SELECT id FROM Orders', "public", ("Orders",), limits,
+                       dialect="postgres")
+    assert allowed.decision == "ALLOW" and allowed.tables == ("Orders",)
+    assert denied.decision == "BLOCK"
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql", "MYSQL", None, [], {}])
+def test_unknown_dialects_do_not_fall_back_to_mysql(dialect, limits):
+    result = check_sql("SELECT id FROM orders", "public", ("orders",), limits,
+                       dialect=dialect)
+    assert result.decision == "UNKNOWN"
+    assert result.findings[0]["rule_id"] == "UNSUPPORTED_DIALECT"
+
+
+@pytest.mark.parametrize("column", ["tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"])
+@pytest.mark.parametrize("spelling", ["unquoted", "upper_unquoted", "quoted"])
+def test_postgres_system_columns_are_explicitly_blocked(column, spelling, limits):
+    value = column.upper() if spelling == "upper_unquoted" else (
+        f'"{column}"' if spelling == "quoted" else column
+    )
+    result = check_sql(f"SELECT orders.{value} FROM orders", "public", ("orders",),
+                       limits, dialect="postgres")
+    assert result.decision == "BLOCK" and result.findings[0]["rule_id"] == "SYSTEM_COLUMN"

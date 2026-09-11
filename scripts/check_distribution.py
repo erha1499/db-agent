@@ -32,7 +32,8 @@ def check() -> None:
                     "work", "outputs", "artifacts", ".venv", "__pycache__", ".git",
                     "node_modules", "dist", "test-results", "playwright-report",
                 }
-                or (part.startswith(".env") and part != ".env.example")
+                or (part.startswith(".env")
+                    and part not in {".env.example", ".env.postgres.example"})
                 or part.endswith((".pem", ".key", ".pyc"))
                 for part in path.parts
             ):

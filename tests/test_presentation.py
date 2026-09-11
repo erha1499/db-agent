@@ -31,8 +31,8 @@ def test_values_precision_null_and_sql_are_preserved_without_new_business_claims
     assert '"30.00"' in answer and '"9007199254740993"' in answer
     assert "NULL" in answer and "2026-02-28T23:59:59" in answer
     assert "返回 2 行" in answer and "当前 SQL 结果已完整返回" in answer
-    assert "WHERE/LIMIT" in answer and "DATETIME 不自带时区" in answer
-    assert "TIMESTAMP 按 UTC 返回" in answer
+    assert "WHERE/LIMIT" in answer and "无时区日期时间不附加时区" in answer
+    assert "带时区类型按 UTC 返回" in answer
     assert "2 月 29" not in answer and "总额" not in answer
 
 
@@ -185,5 +185,5 @@ def test_missing_timezone_does_not_invent_utc_evidence():
     response = report()
     response.pop("session_time_zone")
     answer = render_queries([QueryExecution(SQL, response)])
-    assert "DATETIME 不自带时区" in answer and "未确认会话时区" in answer
-    assert "TIMESTAMP 按 UTC 返回" not in answer
+    assert "无时区日期时间不附加时区" in answer and "未确认会话时区" in answer
+    assert "带时区类型按 UTC 返回" not in answer

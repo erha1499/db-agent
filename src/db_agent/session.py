@@ -2,8 +2,8 @@
 
 from db_agent.agent import run_agent_observed
 from db_agent.config import AnalysisSettings, DatabaseSettings, QuerySettings, Settings
+from db_agent.connectors import create_connector
 from db_agent.conversation_context import conversation_prompt
-from db_agent.db import MetadataConnector
 from db_agent.presentation import AgentRunResult, has_complete_query_results
 from db_agent.records import RunRecord
 
@@ -74,7 +74,7 @@ class ConversationSession:
             conversation_prompt(previous, prompt)
             result = await run_agent_observed(
                 prompt, self._settings.model_copy(deep=True),
-                MetadataConnector(self._database.model_copy(deep=True)), record,
+                create_connector(self._database.model_copy(deep=True)), record,
                 self._analysis.model_copy(deep=True), self._query.model_copy(deep=True),
                 previous_requests=previous,
             )

@@ -2,9 +2,11 @@
 
 import asyncio
 import json
+import re
 import time
 from collections import Counter
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from statistics import median
 from uuid import uuid4
 
@@ -14,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, StrictStr
 from db_agent.config import AnalysisSettings, QuerySettings
 from db_agent.db import MetadataConnector
 from db_agent.records import RunRecord
-from db_agent.result_delivery import NUMERIC_TYPES, number, validate_result
+from db_agent.result_delivery import NUMERIC_TYPES, validate_result
 
 
 class ComparisonInput(BaseModel):
@@ -37,6 +39,25 @@ def _statement_report(item: dict) -> dict:
     }
 
 
+def _comparison_number(value) -> Decimal:
+    # Comparison does no arithmetic: PostgreSQL numeric can exceed the chart's
+    # 100-digit arithmetic budget. Bound parsing by the maximum result envelope.
+    if type(value) not in {str, int, float}:
+        raise ValueError("Unsupported numeric result")
+    text = str(value)
+    if len(text) > 131072 or not re.fullmatch(
+        r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", text,
+    ):
+        raise ValueError("Unsupported numeric result")
+    try:
+        result = Decimal(text)
+    except InvalidOperation:
+        raise ValueError("Unsupported numeric result") from None
+    if not result.is_finite():
+        raise ValueError("Unsupported numeric result")
+    return result
+
+
 def _rows_key(result: dict, ordered: bool):
     rows = []
     for row in result["rows"]:
@@ -47,7 +68,7 @@ def _rows_key(result: dict, ordered: bool):
             elif column["type"] in NUMERIC_TYPES:
                 # Decimal construction/equality is exact, independent of decimal
                 # arithmetic context precision. No rounding or tolerance is used.
-                cells.append((column["type"], number(value)))
+                cells.append((column["type"], _comparison_number(value)))
             else:
                 cells.append((type(value).__name__, value))
         rows.append(tuple(cells))
@@ -64,8 +85,8 @@ def compare_results(original: dict, candidate: dict, *, ordered: bool) -> str:
     return "rows_match" if _rows_key(left, ordered) == _rows_key(right, ordered) else "rows_differ"
 
 
-def _structure(original: str, candidate: str) -> dict:
-    left, right = (sqlglot.parse_one(sql, read="mysql") for sql in (original, candidate))
+def _structure(original: str, candidate: str, dialect="mysql") -> dict:
+    left, right = (sqlglot.parse_one(sql, read=dialect) for sql in (original, candidate))
     orders = [tree.args.get("order") is not None for tree in (left, right)]
     return {
         "ast_identical": left == right,
@@ -110,8 +131,8 @@ class OptimizationService:
                 "列标签、类型和位置均须一致；无 ORDER BY 比较多重集，保留重复行次数。",
                 "有 ORDER BY 比较返回序列；并列键及 LIMIT 的选择可能不确定。"
                 "添加或删除 ORDER BY 时，即使行相同也不确认顺序合同一致。",
-                "NULL 独立于零和文本；数值精确比较，不忽略浮点差异；文本不模拟 MySQL collation。",
-                "快照只覆盖已检查的 InnoDB 非锁定读取。后续提交不可见，重复试验间是不同快照；"
+                "NULL 独立于零和文本；数值精确比较，不忽略浮点差异；文本不模拟数据库 collation。",
+                "快照只覆盖当前数据源已检查的只读表。后续提交不可见，重复试验间是不同快照；"
                 "发现跨次结果变化时结论不确定。未返回服务器 warning。",
                 "EXPLAIN 是估算；select_duration_ms 是客户端派发至 EOF/游标清理，"
                 "包含网络和结果编码，不是服务器纯执行耗时或实测扫描行数。",
@@ -127,7 +148,9 @@ class OptimizationService:
             checks = [self.connector.check_sql(sql, self.analysis_limits)
                       for sql in (request.original, request.candidate)]
             if all(checked.decision == "ALLOW" for checked in checks):
-                report["structure"] = _structure(original, candidate)
+                report["structure"] = _structure(
+                    original, candidate, getattr(self.connector, "dialect", "mysql"),
+                )
                 report["statements"] = {"original": original, "candidate": candidate}
             for iteration in range(repeat):
                 names = (["original", "candidate"] if iteration % 2 == 0 else
@@ -153,7 +176,9 @@ class OptimizationService:
                     reason = compare_results(sides["original"], sides["candidate"], ordered=ordered)
                 except ValueError:
                     break
-                trial["snapshot"] = "same_readonly_innodb_snapshot"
+                trial["snapshot"] = ("same_readonly_postgres_snapshot"
+                                     if getattr(self.connector, "dialect", "mysql") == "postgres"
+                                     else "same_readonly_innodb_snapshot")
                 report["completed_trials"] += 1
                 if report["structure"]["order_contract_changed"] and reason == "rows_match":
                     trial["reason"] = report["reason"] = "order_contract_changed"

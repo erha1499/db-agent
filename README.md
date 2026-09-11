@@ -4,7 +4,7 @@
 
 首版采用 **Python + LangChain + OpenAI 兼容模型接口**。使用 LangChain 的 `create_agent` 管理模型和工具协议，减少基础运行时开发，把精力放在数据库业务、执行边界和验证上。
 
-> **当前状态：已提供 SQL 预检、普通 EXPLAIN 诊断、受控 SELECT、会话内多轮查询、经确认的跨会话业务知识、需登录的本机多身份 Web 页面和固定电商业务评测。** CLI 和 Agent 可以读取授权表结构、获取 MySQL 8.4 的真实计划，并在执行入口重新检查后查询业务数据。查询回答根据工具实际报告生成；支持百万订单合成数据的分批导入与独立口径验收。业务知识通过本机 CLI 或登录后的 Web 面板分别管理、持久化和显式引用，详见[业务知识说明](docs/knowledge.md)。已提供原/候选 SQL 的同快照结果核对和优化观测，详见[SQL 优化验证](docs/optimization.md)。通用 SQL 等价证明和数据库变更尚未实现。
+> **当前状态：已提供 SQL 预检、普通 EXPLAIN 诊断、受控 SELECT、会话内多轮查询、经确认的跨会话业务知识、需登录的本机多身份 Web 页面和固定电商业务评测。** CLI 和 Agent 可以读取授权表结构、获取 MySQL 8.4 或 PostgreSQL 18.6 的真实计划，并在执行入口重新检查后查询业务数据。查询回答根据工具实际报告生成；支持百万订单合成数据的分批导入与独立口径验收。业务知识通过本机 CLI 或登录后的 Web 面板分别管理、持久化和显式引用，详见[业务知识说明](docs/knowledge.md)。已提供原/候选 SQL 的同快照结果核对和优化观测，详见[SQL 优化验证](docs/optimization.md)。通用 SQL 等价证明和数据库变更尚未实现。
 
 项目大步骤、完成状态和下一步优先级统一维护在 [TODO 清单](TODO.md)。开始新任务前先核对清单，再按本文查找运行方式与能力限制。
 
@@ -70,6 +70,22 @@ uv run db-agent web
 [业务知识说明](docs/knowledge.md)提供指标口径、声明表关系与 SQL 模板的本机持久化。使用 `db-agent knowledge create --stdin` 保存草稿，`show` 审阅来源和完整摘要，`confirm <id> --digest <digest>` 确认，`revoke` 处理失效。新进程的 `chat`、`session` 或新建 Web 对话可输入 `[[knowledge:<id>]]` 显式取用。
 
 知识按项目、数据源、账号和白名单隔离，记录来源/版本、有效期和人工失效条件；实际结构变化、撤销、过期和存储失败均停止。当前明确请求优先；知识不提供执行授权，查询仍走原 SQL、计划、只读事务和预算检查。它不恢复旧聊天或业务结果，没有隐式保存模型输出或自动注入。
+
+## PostgreSQL 数据源与条件聚合
+
+已增加独立 PostgreSQL 18.6 reader 和 searched `CASE WHEN` 条件聚合，覆盖授权元数据、
+方言预检、普通 EXPLAIN、受控查询、真实自然语言查询，以及知识/历史/结果与身份隔离。
+数据源由 `.env` 的 `DB_AGENT_DATABASE_KIND=mysql|postgresql` 选择，默认仍为MySQL；
+PostgreSQL使用独立 `DB_AGENT_POSTGRES_*` 凭据，不能从MySQL配置或模型输入获得授权。
+独立环境位于 `127.0.0.1:15432/db_agent_pg.business`，不修改现有MySQL。
+
+```bash
+uv run python scripts/setup_postgres.py --apply
+uv run python scripts/setup_postgres.py --verify-only
+# 按说明将reader配置填入当前.env后，可使用原db/chat/session/web入口
+```
+
+配置、SQL边界、事务与类型差异、验收和清理见[PostgreSQL使用说明](docs/postgresql.md)。
 
 ## 本地 MySQL
 
@@ -152,7 +168,7 @@ uv run db-agent chat '分析 SELECT id, customer_id FROM orders ORDER BY created
 
 含敏感字面值的 SQL 可以通过 `db analyze --stdin` 或 `db query --stdin` 输入，避免写入命令参数或 shell 历史；输入为受长度限制的 UTF-8。直接 `db` CLI 不调用模型。`chat` 会把问题、SQL、元数据及脱敏计划摘要发送给配置模型，这些输入应适合该模型的使用范围；查询返回行由程序直接展示，查询工具轮后不再请求模型。
 
-当前支持单条完整 `SELECT`、单表和带 `ON` 的显式 `INNER` / `LEFT JOIN`、基础比较与算术、分组、排序、`LIMIT`，以及 `COUNT` / `SUM` / `AVG` / `MIN` / `MAX`。函数名必须紧接左括号，不能加反引号或数据库限定。CTE、子查询、UNION、窗口函数、DISTINCT、无表来源、未绑定占位符等返回 `UNKNOWN`；写操作、越界表、文件操作、锁定读取和非批准函数返回 `BLOCK`。实际注释与提示、未支持的标识符及语法明确拒绝；字符串中的标记按词法区分。使用 MySQL 方言 AST 和节点/参数白名单，不以解析成功当作安全证明，也不改写原 SQL 后冒充原计划。
+当前支持单条完整 `SELECT`、单表和带 `ON` 的显式 `INNER` / `LEFT JOIN`、基础比较与算术、分组、排序、`LIMIT`，以及 `COUNT` / `SUM` / `AVG` / `MIN` / `MAX`，以及 searched `CASE WHEN` 条件表达式。函数名必须紧接左括号，不能加反引号或数据库限定。CTE、子查询、UNION、窗口函数、DISTINCT、无表来源、未绑定占位符等返回 `UNKNOWN`；写操作、越界表、文件操作、锁定读取和非批准函数返回 `BLOCK`。实际注释与提示、未支持的标识符及语法明确拒绝；字符串中的标记按词法区分。使用 MySQL 方言 AST 和节点/参数白名单，不以解析成功当作安全证明，也不改写原 SQL 后冒充原计划。
 
 `explain_checked` 自身每次重新预检，通过后验证当前库、SQL 模式、基础表类型和 MySQL 8.4，固定 JSON 计划版本 1，仅读取 `EXPLAIN FORMAT=JSON`。新版本、其他 SQL 模式或无法识别的计划进入 `UNKNOWN`。计划保留访问路径、索引、估算扫描/产出行数和排序证据；不回传原始条件、字面值或完整计划。单次扫描估算超阈值、连接阶段产出过大、规模较大的排序/临时表返回 `REVIEW`；缺少关键证据不按零处理，小表全扫不机械阻断，`LIMIT` 不豁免大扫描。
 
@@ -254,10 +270,10 @@ DB_AGENT_MYSQL_DDL_INTEGRATION=1 uv run pytest tests/test_mysql_query_isolation.
 
 | 能力 | 首版做到什么程度 |
 | --- | --- |
-| 数据源与元数据 | 明确授权的 MySQL 数据源，按授权获取字段、索引及同库基础表之间声明的完整外键列对 |
+| 数据源与元数据 | 可信配置选择 MySQL/PostgreSQL 数据源，按授权获取字段、索引及同库基础表之间声明的完整外键列对 |
 | 权限校验 | 由服务端绑定身份，检查环境、数据源、库表和操作类型；配合最小权限数据库账号 |
 | SQL 静态检查 | 基于 MySQL 方言的语法树限定单语句和支持的语法，识别越界访问与危险操作 |
-| 执行计划分析 | 对通过前置检查的查询获取普通 `EXPLAIN FORMAT=JSON`，结合规模统计和策略阈值输出风险证据 |
+| 执行计划分析 | 对通过前置检查的查询获取普通方言 EXPLAIN JSON，结合规模统计和策略阈值输出风险证据 |
 | SQL 诊断 | 接收已有 SQL，解释计划和错误，提出候选改写或索引建议；建议不自动成为变更 |
 | 受控查询 | 仅执行支持且通过全部检查的只读 `SELECT`，限制时间、返回行数、结果大小与并发 |
 | Agent 工具运行 | 通过 LangChain 接入领域工具；一个模型、顺序调用、参数校验、有限轮数和总预算 |
@@ -265,7 +281,7 @@ DB_AGENT_MYSQL_DDL_INTEGRATION=1 uv run pytest tests/test_mysql_query_isolation.
 
 首版以 CLI 或极简入口为主。暂不执行 DML/DDL；如果加入 `UPDATE`、`DELETE` 等检查样本，只做静态审核与风险预览。完整审批流程也不属于首版：需要审核的请求先停止并返回报告。
 
-不在近期范围内：多数据库适配、集群运维、数据库迁移、备份恢复、自动建索引、生产自愈、完整 BI、多 Agent 调度、通用文件/终端工具、Git 管理、人员与待办管理。
+不在近期范围内：任意数据库通用适配、跨源JOIN、集群运维、数据库迁移、备份恢复、自动建索引、生产自愈、完整 BI、多 Agent 调度、通用文件/终端工具、Git 管理、人员与待办管理。
 
 ## 预期业务流程
 

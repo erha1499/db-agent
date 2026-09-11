@@ -307,3 +307,16 @@ def test_constructed_or_mutated_parsed_models_cannot_bypass_validation(nested):
         response["parsed"] = response["parsed"].model_copy(update={"issues": ["not a match"]})
     with pytest.raises(SemanticReviewError):
         parse_review(response)
+
+
+def test_postgres_review_gets_trusted_dialect_and_conditional_aggregate_null_rules():
+    messages = review_messages("查询已支付订单数", "SELECT COUNT(*) FROM orders", [],
+                               dialect="postgres")
+    prompt = messages[0].content
+    assert "PostgreSQL" in prompt and "CASE WHEN" in prompt
+    assert "NULLS LAST" in prompt and "NULLS FIRST" in prompt
+    assert "COUNT 不计入 NULL" in prompt
+    assert "不授予权限" in prompt
+    assert "可信目标方言：MySQL" not in prompt
+    with pytest.raises(SemanticReviewError):
+        review_messages("request", "sql", [], dialect="sqlite")

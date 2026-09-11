@@ -16,6 +16,7 @@ from db_agent.config import (
     load_query_settings,
     load_settings,
 )
+from db_agent.connectors import create_connector
 from db_agent.db import DatabaseError, MetadataConnector
 from db_agent.knowledge_cli import add_knowledge_commands, knowledge_command
 from db_agent.optimization import ComparisonInput, OptimizationService
@@ -214,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.sql = raw.decode("utf-8")
                     except (OSError, UnicodeError):
                         raise ConfigurationError("无法读取 UTF-8 SQL 标准输入。") from None
-            connector = MetadataConnector(load_database_settings())
+            connector = create_connector(load_database_settings())
             with RunRecord() as record:
                 result = asyncio.run(run_database_command(args, connector, record))
             print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -235,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         prompt = (
             "这是模型连通性检查，请仅回复 DB_AGENT_OK。" if args.command == "check" else args.prompt
         )
-        connector = MetadataConnector(load_database_settings()) if args.command == "chat" else None
+        connector = create_connector(load_database_settings()) if args.command == "chat" else None
         analysis_settings = load_analysis_settings() if connector else None
         query_settings = load_query_settings() if connector else None
         with RunRecord() as record:
