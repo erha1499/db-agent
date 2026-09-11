@@ -7,7 +7,7 @@
 - 先读 `README.md` 和 [TODO.md](TODO.md)，核对 Git 状态和实际文件。TODO 维护大步骤、完成状态和下一步优先级，列入清单不代表功能已经存在或已授权实施。
 - 面向实际数据库工作流程，主要业务是数据库查询、SQL 风险预检与诊断，后续逐步扩展 Data Agent、业务记忆和受控变更。
 - 近期目标：Python、LangChain、单个 OpenAI 兼容模型和明确授权的 MySQL 数据源，分阶段完成可实际使用的 SQL 预检、诊断与受控查询闭环；先在隔离测试环境验证。
-- 当前已接入 MySQL 元数据、SQLGlot 静态预检、普通 EXPLAIN JSON、结构化诊断与受控 SELECT；Agent 提供 `list_tables` / `describe_table` / `analyze_sql` / `execute_query`，并有直接 CLI、`session` 会话内多轮查询、最小运行记录、pytest、Ruff、百万订单电商合成数据和固定业务评测。查询回答由可信报告确定性生成。通用结果等价验证、跨会话业务记忆和变更仍待实现。开发使用 Python 3.13 和 `uv sync`，依赖版本以 `uv.lock` 为准。
+- 当前已接入 MySQL 元数据、SQLGlot 静态预检、普通 EXPLAIN JSON、结构化诊断与受控 SELECT；Agent 提供 `list_tables` / `describe_table` / `analyze_sql` / `execute_query`，并有直接 CLI、`session` 会话内多轮查询、本机 Web 页面、最小运行记录、pytest、Ruff、百万订单电商合成数据和固定业务评测。查询回答由可信报告确定性生成。通用结果等价验证、跨会话业务记忆和变更仍待实现。开发使用 Python 3.13 和 `uv sync`，依赖版本以 `uv.lock` 为准。
 - 使用 `langchain.agents.create_agent` 与 `langchain_openai.ChatOpenAI`，复用框架的模型与工具协议，不自写 harness 或自定义 Graph。LangGraph 是框架内部依赖；近期不扩展多 Agent、分布式编排、完整观测平台或通用记忆系统。
 - 每个阶段优先完成一条受控业务闭环和验收证据，再扩大功能范围。按目标环境核对版本、权限、运行限制与业务结果，不能用假工具、预制回答或伪造测试结果冒充可运行功能。
 
@@ -54,7 +54,17 @@
 - 当前支持单表、显式 INNER/LEFT JOIN ON、基础表达式与五种聚合。CTE/子查询/UNION/window 等 UNKNOWN；实际注释、侧效操作、越界对象与非批准函数明确拒绝。`db analyze` 只返回报告，生成报告成功为退出码 0，自动化必须读取 decision；这不是查询命令的退出码约定。
 - `query.py` 负责查询业务响应与记录，`results.py` 负责类型转换和有界结果；`MetadataConnector.execute_checked` 内部重新预检，不接收旧报告或 approved 参数。它在同一连接的 READ COMMITTED 显式 READ ONLY 事务中采集普通 EXPLAIN，计划前后两次核对所有对象为 BASE TABLE/InnoDB，并在事务开始后、派发 SELECT 前两次确认协议事务状态；仅 ALLOW 可发送原始 SQL。
 - `DB_AGENT_QUERY_*` 默认预算为 100 行、32768 结果 JSON 字节、64 列；SELECT 派发与读取共 5 秒，操作总预算 15 秒，包含排队、连接、分析和读取。分析阶段另受 10 秒分析预算限制；会话 time_zone 固定 +00:00，执行设置 max_execution_time。不得把结果字节预算说成扫描量、网络流量或单字段内存上限。
-- 查询响应的 status、decision、execution_status 分别判断；`db query` 退出码为 0（取得结果，包括截断）、3（规则拒绝）、1（取证或执行错误）、2（配置或 CLI 输入错误）。ALLOW 不等于成功；派发后失败可为 ALLOW + unknown，result 为空。result_id 仅关联当前结果，没有持久化或按 ID 取回接口。
+- 查询响应的 status、decision、execution_status 分别判断；`db query` 退出码为 0（取得结果，包括截断）、3（规则拒绝）、1（取证或执行错误）、2（配置或 CLI 输入错误）。ALLOW 不等于成功；派发后失败可为 ALLOW + unknown，result 为空。result_id 仅关联当前结果，没有通用按结果 ID 取回接口；Web 单独保存本机会话快照。
+
+## 本地 Web 入口
+
+- `frontend/` 是 React + TypeScript + Vite 页面；`web.py` 使用 FastAPI 直接复用 Python 服务，不启动 Shell、不解析 CLI stdout。`uv run db-agent web` 固定监听 `127.0.0.1:8000`，可用 `--port` 改端口；源码安装需先在 `frontend` 执行 `npm ci && npm run build`。本入口只用于本机单用户、单进程，不是多用户服务。
+- Web 对所有 API 检查 Host、Origin、跨站请求和专用请求头；页面与接口同源，开发通过 Vite proxy。浏览器不能提供数据库目标、授权标志、凭据或可信历史。密钥仍只由现有配置读取。
+- `outputs/web/conversations.sqlite3` 保存本机问题、回答、SQL、结构化报告与结果，区别于仍脱敏的 `outputs/runs`。保存失败不能声称历史已保存。目录/文件限当前用户访问，不能提交或作为模型上下文；删除会话删除对应历史。不同数据源、账号或白名单配置隔离历史。
+- 运行请求先持久化再创建 asyncio Task；请求 ID 防重复派发，全局一次只运行一个任务。事件来自实际运行记录，答案保持非流式，轮询不重新执行。取消必须等待 Task 退出，协程开始前取消也需清理注册表；历史故障不能阻断取消。停止不能声称服务器 SQL 已确认取消，重启遗留任务标记 interrupted、不重放。
+- Web 使用显式 `previous_requests` 进入会话模式，历史仅取服务端完整成功查询的原始用户请求，主生成、合同提取与复核共享同一完整请求包；不能按用户文本前缀授予可信上下文。业务行、旧生成 SQL 和旧授权均不回放，原模型/工具/时限预算保持不变。失败、取消、截断、无查询或不完整查询证据后的连续口径暂停，要求新建对话完整重述；不静默回退到更早条件。详细范围见 [Web 使用说明](docs/web.md)。
+- UI 依据真实报告分别展示 decision、execution_status 和 result，显式显示缺报告、空集与截断；结果按列位置展示，金额与大整数不经 Number 转换，Markdown 禁用原始 HTML。SQL 诊断模式直接调用分析服务，不调用模型、不执行 SELECT。
+- Web 定向验证：`uv run pytest tests/test_web.py -q`；前端：在 `frontend` 执行 `npm run build && npm run test:e2e`。浏览器合同测试使用明确的合成 HTTP 替身，不代表真实模型或数据库验收；真实页面链路另外验收。
 
 ## SQL 执行要求
 

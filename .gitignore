@@ -31,6 +31,11 @@ coverage.xml
 build/
 dist/
 *.egg-info/
+node_modules/
+*.tsbuildinfo
+/frontend/playwright-report/
+/frontend/test-results/
+.sites-runtime/
 
 # Runtime state, logs and database exports
 *.log

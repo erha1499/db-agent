@@ -857,6 +857,36 @@ def test_observed_queries_capture_only_service_evidence_and_exact_call_order(
     assert len(stub_server["responses"]) == 1
 
 
+def test_observed_analysis_preserves_service_report_separately_from_model_text(
+    stub_server, monkeypatch,
+):
+    from db_agent.analysis import SqlAnalysisService
+    from db_agent.config import load_database_settings, load_settings
+
+    sql = "SELECT id FROM orders"
+    report = {"decision": "REVIEW", "findings": [{"rule_id": "SYNTHETIC_RISK"}]}
+
+    async def analyze(self, candidate):
+        assert candidate == sql
+        return report
+
+    monkeypatch.setattr(SqlAnalysisService, "analyze", analyze)
+    stub_server["responses"] = [
+        tool_completion(("analyze_sql", {"sql": sql})),
+        completion('模型解释中出现的 ALLOW 不是可信诊断。'),
+    ]
+    observed = asyncio.run(agent_module.run_agent_observed(
+        "诊断订单查询", load_settings(), MetadataConnector(load_database_settings()),
+    ))
+    assert observed.queries == []
+    assert observed.tool_calls == ["analyze_sql"] and observed.model_calls == 2
+    assert observed.analyses[0].sql == sql
+    assert observed.analyses[0].report == report
+    report["findings"][0]["rule_id"] = "changed-after-capture"
+    assert observed.analyses[0].report["findings"][0]["rule_id"] == "SYNTHETIC_RISK"
+    assert observed.analyses[0].report["decision"] == "REVIEW"
+
+
 @pytest.mark.parametrize("with_metadata", [False, True])
 def test_observed_nonquery_answers_keep_model_explanation_and_no_query_evidence(
     stub_server, monkeypatch, with_metadata,
@@ -1079,6 +1109,12 @@ def test_query_and_metadata_same_round_finish_without_extra_model_call(
     assert len(observed.queries) == 1 and observed.queries[0].report == report
     assert "当前 SQL 结果已完整返回" in observed.answer
     assert "不应请求" not in observed.answer
+    if metadata_operation == "analyze_sql":
+        assert len(observed.analyses) == 1
+        assert observed.analyses[0].sql == expected_sql
+        assert observed.analyses[0].report == {"decision": "ALLOW", "findings": []}
+    else:
+        assert observed.analyses == []
 
 
 def test_query_capability_contract_is_sent_in_prompt_and_sql_tool_descriptions(stub_server, capsys):

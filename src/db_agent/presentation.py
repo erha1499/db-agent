@@ -20,6 +20,40 @@ class AgentRunResult:
     tool_calls: list[str]
     semantic_reviews: list[dict] = field(default_factory=list, repr=False)
     query_intents: list[dict] = field(default_factory=list, repr=False)
+    analyses: list[QueryExecution] = field(default_factory=list, repr=False)
+
+
+def has_complete_query_results(result: AgentRunResult) -> bool:
+    """Require complete evidence for every query before inheriting its user request."""
+    attempts = result.tool_calls.count("execute_query")
+    if not attempts or attempts != len(result.queries):
+        return False
+    for query in result.queries:
+        if not isinstance(query, QueryExecution) or not isinstance(query.report, dict):
+            return False
+        report = query.report
+        if (
+            report.get("status") != "ok" or report.get("decision") != "ALLOW"
+            or report.get("execution_status") != "completed"
+            or report.get("error") is not None
+            or not isinstance(report.get("result"), dict)
+            or report["result"].get("truncated") is not False
+        ):
+            return False
+        data = report["result"]
+        columns, rows = data.get("columns"), data.get("rows")
+        if (
+            not isinstance(columns, list) or not columns
+            or any(not isinstance(column, dict)
+                   or not isinstance(column.get("name"), str)
+                   or not isinstance(column.get("type"), str) for column in columns)
+            or not isinstance(rows, list)
+            or type(data.get("row_count")) is not int
+            or data["row_count"] != len(rows)
+            or any(not isinstance(row, list) or len(row) != len(columns) for row in rows)
+        ):
+            return False
+    return True
 
 
 def _visible_text(value: str, *, multiline: bool = False) -> str:
