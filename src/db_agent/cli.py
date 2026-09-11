@@ -16,6 +16,7 @@ from db_agent.config import (
     load_settings,
 )
 from db_agent.db import DatabaseError, MetadataConnector
+from db_agent.knowledge_cli import add_knowledge_commands, knowledge_command
 from db_agent.presentation import AgentRunResult, render_queries
 from db_agent.query import QueryService
 from db_agent.records import RunRecord
@@ -127,6 +128,7 @@ async def run_database_command(args, connector: MetadataConnector, record: RunRe
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="数据库 Agent：配置检查与数据库问答")
     commands = parser.add_subparsers(dest="command", required=True)
+    add_knowledge_commands(commands)
     commands.add_parser("config", help="校验配置，仅显示配置状态")
     commands.add_parser("check", help="调用一次模型，检查连通性")
     web = commands.add_parser("web", help="启动本机 Web 对话页面")
@@ -164,6 +166,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("问题不能为空")
 
     try:
+        if args.command == "knowledge":
+            return knowledge_command(args)
         if args.command == "db":
             if args.db_command in {"analyze", "query"}:
                 args.analysis_settings = load_analysis_settings()

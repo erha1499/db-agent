@@ -165,6 +165,11 @@ def _render_query(execution: QueryExecution, index: int) -> str:
             for key, label in (("code", "错误码"), ("message", "错误")):
                 if isinstance(error.get(key), str):
                     lines.append(label + "：" + _text(error[key]))
+    for item in report.get("business_knowledge", []):
+        lines.append("业务知识引用：" + _text(item["title"]) + "；ID：" + _text(item["id"])
+                     + "；来源：" + _text(item["source"])
+                     + "；版本：" + _text(item["source_version"])
+                     + "；摘要：" + _text(item["digest"]) + "。引用不是执行授权。")
     return "\n".join(lines)
 
 
