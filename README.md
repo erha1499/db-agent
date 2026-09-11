@@ -25,7 +25,7 @@ uv run db-agent config
 uv run db-agent check
 ```
 
-`config` 校验模型配置，仅显示三个必填项的状态，不显示值，也不请求模型；`check` 仅发起一次真实模型请求，不连接数据库。完成下方数据库配置后，可以使用 `db` 子命令或带领域工具的 `chat`；每次 `chat` 创建独立会话，非流式返回回复，不保留聊天记忆。也可以使用 `uv run python -m db_agent` 调用相同命令。
+`config` 校验模型配置，仅显示三个必填项的状态，不显示值，也不请求模型；`check` 仅发起一次真实模型请求，不连接数据库。完成下方数据库配置后，可以使用 `db` 子命令或带领域工具的 `chat`；每次 `chat` 是独立问答，非流式返回回复。`uv run db-agent session` 提供[会话内多轮查询](docs/conversations.md)，仅在内存保留完整成功查询的用户请求，失败后要求 `/reset`，退出即清空。也可以使用 `uv run python -m db_agent` 调用相同命令。
 
 | 配置项 | 用途 | 默认值 |
 | --- | --- | --- |
@@ -203,7 +203,7 @@ DB_AGENT_MYSQL_DDL_INTEGRATION=1 uv run pytest tests/test_mysql_query_isolation.
 
 该测试只接受固定本地 Compose 目标，在 `db_agent` 创建并清理独有随机表，检查 EXPLAIN 后 DDL 等待及表类型变化后的拒绝行为；不修改 `customers`、`orders`、`order_items`。此开关明确允许测试自身的建表、改表与清理，不用于其他数据源。
 
-`check`、`chat` 和 `db` 命令在 `outputs/runs/<uuid>.jsonl` 写入运行、模型、工具、数据库、分析和查询事件，记录状态、错误码、耗时、报告/查询/结果关联 ID、决策、规则、结构指纹，以及返回行数与截断标记。记录不包含问题原文、密码、SQL、工具参数、列名或行值；工具调用 ID 只保存摘要。记录失败会在 stderr 提示一次并继续业务，这些记录不承担审批账本职责。
+`check`、`chat`、`session` 的每轮查询和 `db` 命令在 `outputs/runs/<uuid>.jsonl` 写入运行、模型、工具、数据库、分析和查询事件，记录状态、错误码、耗时、报告/查询/结果关联 ID、决策、规则、结构指纹，以及返回行数与截断标记。记录不包含问题原文、密码、SQL、工具参数、列名或行值；工具调用 ID 只保存摘要。记录失败会在 stderr 提示一次并继续业务，这些记录不承担审批账本职责。
 
 ## 要解决的业务问题
 
