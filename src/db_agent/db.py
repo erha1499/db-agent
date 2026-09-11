@@ -85,15 +85,42 @@ class MetadataConnector:
         self, sql: str, analysis_limits: AnalysisSettings, query_limits: QuerySettings,
         *, before_select=None,
     ) -> dict:
-        """Plan and execute the current SQL in one connection; no cached approval input."""
+        """Original checked SELECT entry; no cached approval or connection input."""
+        outcomes = await self._execute_statements_checked(
+            (sql,), analysis_limits, query_limits, before_select=before_select,
+        )
+        return outcomes[0]
+
+    async def compare_checked(
+        self, original: str, candidate: str,
+        analysis_limits: AnalysisSettings, query_limits: QuerySettings, *, before_select=None,
+    ) -> list[dict]:
+        """Exactly two checked SELECTs on one read-only InnoDB snapshot.
+
+        Both use the original execution kernel. The pair shares ONE operation
+        deadline, including queueing; each statement retains analysis/SELECT limits.
+        An incomplete first result stops the pair without draining or reconnecting.
+        """
+        return await self._execute_statements_checked(
+            (original, candidate), analysis_limits, query_limits, before_select=before_select,
+        )
+
+    async def _execute_statements_checked(
+        self, statements: tuple[str, ...], analysis_limits: AnalysisSettings,
+        query_limits: QuerySettings, *, before_select=None,
+    ) -> list[dict]:
         started = time.monotonic()
-        checked = self.check_sql(sql, analysis_limits)
-        outcome = {
+        paired = len(statements) == 2
+        outcomes = [{
             "check": checked, "assessment": None, "server_version": None, "result": None,
             "decision": checked.decision, "execution_status": "not_started", "error": None,
-        }
-        if checked.decision != "ALLOW":
-            return outcome
+            "select_duration_ms": None,
+        } for sql in statements for checked in (self.check_sql(sql, analysis_limits),)]
+        # Check BOTH original inputs before opening a connection. These checks
+        # are repeated immediately before each statement, never reused as grants.
+        if any(item["decision"] != "ALLOW" for item in outcomes):
+            return outcomes
+        outcome = outcomes[0]
         phase = "analysis"
         try:
             remaining = query_limits.operation_timeout_seconds - (time.monotonic() - started)
@@ -106,7 +133,10 @@ class MetadataConnector:
                 async with asyncio.timeout_at(analysis_deadline):
                     await self._fetch(connection, "SET SESSION time_zone = '+00:00'", (), [])
                     await self._fetch(
-                        connection, "SET SESSION transaction_isolation = 'READ-COMMITTED'", (), [],
+                        connection, ("SET SESSION transaction_isolation = 'REPEATABLE-READ'"
+                                     if paired else
+                                     "SET SESSION transaction_isolation = 'READ-COMMITTED'"),
+                        (), [],
                     )
                     await self._fetch(
                         connection, "SET SESSION lock_wait_timeout = %s",
@@ -116,43 +146,79 @@ class MetadataConnector:
                         connection, "SET SESSION max_execution_time = %s",
                         (max(1, math.ceil(analysis_limits.timeout_seconds * 1000)),), [],
                     )
-                    await self._fetch(connection, "START TRANSACTION READ ONLY", (), [])
+                    await self._fetch(
+                        connection, ("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
+                                     if paired else "START TRANSACTION READ ONLY"), (), [],
+                    )
                     self._require_readonly_transaction(connection)
-                    plan, version = await self._collect_plan(
-                        connection, sql, checked, analysis_limits, require_innodb=True,
-                    )
-                    assessment = analyze_plan(plan, analysis_limits, checked.aliases)
-                    outcome.update(
-                        assessment=assessment, server_version=version, decision=assessment.decision,
-                    )
-                    if assessment.decision != "ALLOW":
-                        return outcome
-                    # Recheck object kind on the same transaction before executing.
-                    await self._validate_analysis_tables(connection, checked, require_innodb=True)
-                await self._fetch(
-                    connection, "SET SESSION max_execution_time = %s",
-                    (max(1, math.ceil(query_limits.execution_timeout_seconds * 1000)),), [],
-                )
-                # aiomysql refreshes server_status on this OK packet, not SELECT EOF.
-                self._require_readonly_transaction(connection)
-                cursor = await connection.cursor(aiomysql.SSCursor)
-                if before_select is not None:
-                    # The veto shares the original analysis deadline; it adds no budget.
+                for index, (sql, outcome) in enumerate(zip(statements, outcomes, strict=True)):
+                    phase = "analysis"
+                    checked = self.check_sql(sql, analysis_limits)
+                    outcome.update(check=checked, decision=checked.decision)
+                    if checked.decision != "ALLOW":
+                        return outcomes
+                    if index:
+                        analysis_deadline = (
+                            asyncio.get_running_loop().time() + analysis_limits.timeout_seconds
+                        )
                     async with asyncio.timeout_at(analysis_deadline):
-                        await before_select(connection)
-                    self._require_readonly_transaction(connection)
-                phase = "execution"
-                async with asyncio.timeout(query_limits.execution_timeout_seconds):
-                    outcome["execution_status"] = "unknown"
-                    # None preserves literal % characters; the SQL is never rewritten.
-                    await cursor.execute(sql, None)
-                    result = await read_query_result(cursor, query_limits)
-                    if result["server_statement_status"] == "completed":
-                        await cursor.close()
-                    outcome.update(
-                        result=result,
-                        execution_status="truncated" if result["truncated"] else "completed",
+                        if index:
+                            await self._fetch(
+                                connection, "SET SESSION max_execution_time = %s",
+                                (max(1, math.ceil(analysis_limits.timeout_seconds * 1000)),), [],
+                            )
+                        if paired:
+                            isolation = await self._fetch(
+                                connection,
+                                "SELECT @@SESSION.transaction_isolation AS isolation_level", (), [],
+                            )
+                            if isolation != [{"isolation_level": "REPEATABLE-READ"}]:
+                                raise DatabaseError(
+                                    "SNAPSHOT_UNCONFIRMED", "未能确认一致性快照隔离级别",
+                                )
+                            self._require_readonly_transaction(connection)
+                        plan, version = await self._collect_plan(
+                            connection, sql, checked, analysis_limits, require_innodb=True,
+                        )
+                        assessment = analyze_plan(plan, analysis_limits, checked.aliases)
+                        outcome.update(
+                            assessment=assessment, server_version=version,
+                            decision=assessment.decision,
+                        )
+                        if assessment.decision != "ALLOW":
+                            return outcomes
+                        # Recheck object kind on the same transaction before executing.
+                        await self._validate_analysis_tables(
+                            connection, checked, require_innodb=True,
+                        )
+                    await self._fetch(
+                        connection, "SET SESSION max_execution_time = %s",
+                        (max(1, math.ceil(query_limits.execution_timeout_seconds * 1000)),), [],
                     )
+                    # aiomysql refreshes server_status on this OK packet, not SELECT EOF.
+                    self._require_readonly_transaction(connection)
+                    cursor = await connection.cursor(aiomysql.SSCursor)
+                    if before_select is not None:
+                        # The veto shares the original analysis deadline; it adds no budget.
+                        async with asyncio.timeout_at(analysis_deadline):
+                            await before_select(connection)
+                        self._require_readonly_transaction(connection)
+                    phase = "execution"
+                    select_started = time.monotonic()
+                    async with asyncio.timeout(query_limits.execution_timeout_seconds):
+                        outcome["execution_status"] = "unknown"
+                        # None preserves literal % characters; the SQL is never rewritten.
+                        await cursor.execute(sql, None)
+                        result = await read_query_result(cursor, query_limits)
+                        if result["server_statement_status"] == "completed":
+                            await cursor.close()
+                        outcome.update(
+                            result=result,
+                            select_duration_ms=round((time.monotonic() - select_started) * 1000, 3),
+                            execution_status="truncated" if result["truncated"] else "completed",
+                        )
+                    if outcome["execution_status"] != "completed":
+                        return outcomes
         except (DatabaseError, ResultError) as exc:
             if exc.code == "PERMISSION_DENIED":
                 outcome["decision"] = "BLOCK"
@@ -172,7 +238,7 @@ class MetadataConnector:
             if outcome["execution_status"] != "not_started":
                 outcome["execution_status"] = "unknown"
         # CancelledError is intentionally not caught; _connection still closes the socket.
-        return outcome
+        return outcomes
 
     @staticmethod
     def _require_readonly_transaction(connection) -> None:

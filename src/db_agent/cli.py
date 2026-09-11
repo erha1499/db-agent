@@ -17,6 +17,7 @@ from db_agent.config import (
 )
 from db_agent.db import DatabaseError, MetadataConnector
 from db_agent.knowledge_cli import add_knowledge_commands, knowledge_command
+from db_agent.optimization import ComparisonInput, OptimizationService
 from db_agent.presentation import AgentRunResult, render_queries
 from db_agent.query import QueryService
 from db_agent.records import RunRecord
@@ -102,6 +103,10 @@ async def run_database_command(args, connector: MetadataConnector, record: RunRe
             result = await SqlAnalysisService(connector, args.analysis_settings, record).analyze(
                 args.sql
             )
+        elif args.db_command == "compare":
+            result = await OptimizationService(
+                connector, args.analysis_settings, args.query_settings, record
+            ).compare(args.original, args.candidate, repeat=args.repeat)
         elif args.db_command == "query":
             result = await QueryService(
                 connector, args.analysis_settings, args.query_settings, record
@@ -152,7 +157,18 @@ def main(argv: list[str] | None = None) -> int:
         source.add_argument(
             "--stdin", action="store_true", help="从标准输入读取有长度限制的 UTF-8 SQL"
         )
+    compare = db_commands.add_parser("compare", help="核对原 SQL 与候选 SQL 的完整结果及优化观测")
+    compare.add_argument("--original", help="原 SQL；敏感输入建议用 --stdin JSON")
+    compare.add_argument("--candidate", help="候选 SQL")
+    compare.add_argument("--stdin", action="store_true", help="有界 UTF-8 JSON: original/candidate")
+    compare.add_argument("--repeat", type=int, choices=(1, 2, 3), default=1,
+                         help="显式运行次数，默认 1；每次共享原查询总预算")
     args = parser.parse_args(argv)
+    if args.command == "db" and args.db_command == "compare":
+        if args.stdin and (args.original is not None or args.candidate is not None):
+            parser.error("--stdin 不可与 --original/--candidate 同用")
+        if not args.stdin and (args.original is None or args.candidate is None):
+            parser.error("必须同时提供 --original 和 --candidate，或使用 --stdin")
     if args.command == "web":
         if not 1024 <= args.port <= 65535:
             parser.error("Web 端口须在 1024–65535 之间")
@@ -169,6 +185,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "knowledge":
             return knowledge_command(args)
         if args.command == "db":
+            if args.db_command == "compare":
+                args.analysis_settings = load_analysis_settings()
+                args.query_settings = load_query_settings()
+                if args.stdin:
+                    try:
+                        maximum = 2 * args.analysis_settings.max_sql_bytes + 4096
+                        raw = sys.stdin.buffer.read(maximum + 1)
+                        if len(raw) > maximum:
+                            raise ValueError()
+                        request = ComparisonInput.model_validate_json(raw.decode("utf-8"))
+                        args.original, args.candidate = request.original, request.candidate
+                    except (OSError, UnicodeError, ValueError):
+                        raise ConfigurationError(
+                            "无法读取有界 UTF-8 比较 JSON，仅接受 original/candidate。",
+                        ) from None
             if args.db_command in {"analyze", "query"}:
                 args.analysis_settings = load_analysis_settings()
                 if args.db_command == "query":
@@ -183,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
             with RunRecord() as record:
                 result = asyncio.run(run_database_command(args, connector, record))
             print(json.dumps(result, ensure_ascii=False, indent=2))
+            if args.db_command == "compare":
+                return {"observed_equal": 0, "different": 4, "inconclusive": 1}[result["outcome"]]
             if args.db_command == "query":
                 return {"ok": 0, "rejected": 3, "error": 1}[result["status"]]
             return 0

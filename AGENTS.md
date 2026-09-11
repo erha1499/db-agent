@@ -7,7 +7,7 @@
 - 先读 `README.md` 和 [TODO.md](TODO.md)，核对 Git 状态和实际文件。TODO 维护大步骤、完成状态和下一步优先级，列入清单不代表功能已经存在或已授权实施。
 - 面向实际数据库工作流程，主要业务是数据库查询、SQL 风险预检与诊断，后续逐步扩展 Data Agent、业务记忆和受控变更。
 - 近期目标：Python、LangChain、单个 OpenAI 兼容模型和明确授权的 MySQL 数据源，分阶段完成可实际使用的 SQL 预检、诊断与受控查询闭环；先在隔离测试环境验证。
-- 当前已接入 MySQL 元数据、SQLGlot 静态预检、普通 EXPLAIN JSON、结构化诊断与受控 SELECT；Agent 提供 `list_tables` / `describe_table` / `analyze_sql` / `execute_query`，并有直接 CLI、`session` 会话内多轮查询、本机 Web 页面、最小运行记录、pytest、Ruff、百万订单电商合成数据和固定业务评测。查询回答由可信报告确定性生成。已支持经确认的本机跨会话业务知识，通用结果等价验证和变更仍待实现。开发使用 Python 3.13 和 `uv sync`，依赖版本以 `uv.lock` 为准。
+- 当前已接入 MySQL 元数据、SQLGlot 静态预检、普通 EXPLAIN JSON、结构化诊断与受控 SELECT；Agent 提供 `list_tables` / `describe_table` / `analyze_sql` / `execute_query`，并有直接 CLI、`session` 会话内多轮查询、本机 Web 页面、最小运行记录、pytest、Ruff、百万订单电商合成数据和固定业务评测。查询回答由可信报告确定性生成。已支持经确认的本机跨会话业务知识，已提供同快照 SQL 优化核对；通用 SQL 等价证明和变更仍待实现。开发使用 Python 3.13 和 `uv sync`，依赖版本以 `uv.lock` 为准。
 - 使用 `langchain.agents.create_agent` 与 `langchain_openai.ChatOpenAI`，复用框架的模型与工具协议，不自写 harness 或自定义 Graph。LangGraph 是框架内部依赖；近期不扩展多 Agent、分布式编排、完整观测平台或通用记忆系统。
 - 每个阶段优先完成一条受控业务闭环和验收证据，再扩大功能范围。按目标环境核对版本、权限、运行限制与业务结果，不能用假工具、预制回答或伪造测试结果冒充可运行功能。
 
@@ -53,6 +53,8 @@
 - 分析配置独立使用 `DB_AGENT_ANALYSIS_*`：默认 SQL 16384 字节、AST 512 节点/32 层、8 个表引用、计划 65536 字节/256 个 JSON 值节点、10 秒时限；报告额外允许 8 KiB 元数据。扫描/连接产出/排序审核阈值为 100000/1000000/100000 估算行，严格超过时 REVIEW，不能解释为秒数或生产保证。
 - 当前支持单表、显式 INNER/LEFT JOIN ON、基础表达式与五种聚合。CTE/子查询/UNION/window 等 UNKNOWN；实际注释、侧效操作、越界对象与非批准函数明确拒绝。`db analyze` 只返回报告，生成报告成功为退出码 0，自动化必须读取 decision；这不是查询命令的退出码约定。
 - `query.py` 负责查询业务响应与记录，`results.py` 负责类型转换和有界结果；`MetadataConnector.execute_checked` 内部重新预检，不接收旧报告或 approved 参数。它在同一连接的 READ COMMITTED 显式 READ ONLY 事务中采集普通 EXPLAIN，计划前后两次核对所有对象为 BASE TABLE/InnoDB，并在事务开始后、派发 SELECT 前两次确认协议事务状态；仅 ALLOW 可发送原始 SQL。
+- `optimization.py` 的 `OptimizationService` 由直接 CLI `db compare` 提供原/候选 SQL 核对，不调用模型、不新增 Web API 或 Agent 工具。`compare_checked` 与 `execute_checked` 共用私有执行内核；单查询仍 READ COMMITTED，比较固定两侧在 REPEATABLE READ + WITH CONSISTENT SNAPSHOT 的显式 READ ONLY 事务，读回隔离级别且每侧完整重检/否决。每对共享原总预算，不接受旧 approved、报告或外部连接。第一侧不完整立即停止，不排空或重连补跑。
+- 比较按列位置/标签/类型、精确数值、NULL 和重复行次数核对；任一有 ORDER BY 则核对序列，添加/删除排序合同不确认相等。`observed_equal` 仅本快照完整结果一致，`different` 为实测差异，缺证据/截断/失败/跨次变化为 `inconclusive`；不宣称通用等价。显式 repeat 1–3，AB/BA交替，每对独立快照，报告实际计划估算及客户端 SELECT 派发至读取耗时，非服务器纯执行时间。独立固定预期和真实 reader 验收见 [优化验证](docs/optimization.md)，预算默认值在验收脚本中显式固定，不得被 shell 放宽。运行记录不写 SQL/行值；返回比较报告含输入和结果，保存副本按数据权限处理。
 - `DB_AGENT_QUERY_*` 默认预算为 100 行、32768 结果 JSON 字节、64 列；SELECT 派发与读取共 5 秒，操作总预算 15 秒，包含排队、连接、分析和读取。分析阶段另受 10 秒分析预算限制；会话 time_zone 固定 +00:00，执行设置 max_execution_time。不得把结果字节预算说成扫描量、网络流量或单字段内存上限。
 - 查询响应的 status、decision、execution_status 分别判断；`db query` 退出码为 0（取得结果，包括截断）、3（规则拒绝）、1（取证或执行错误）、2（配置或 CLI 输入错误）。ALLOW 不等于成功；派发后失败可为 ALLOW + unknown，result 为空。CLI result_id 仅关联当前结果；Web 支持当前可信会话已保存结果的取回与导出，不提供任意 CLI 结果取回。
 
