@@ -110,16 +110,20 @@ class SemanticReviewError(Exception):
 
 def review_messages(
     user_request: str, sql: str, schemas: list[dict], *, conversation_mode: bool = False,
+    knowledge: list[dict] | None = None,
 ) -> list[BaseMessage]:
     """Build a fresh context from the original task, candidate, and collected schemas only."""
+    from db_agent.knowledge import KNOWLEDGE_RULES
+
     payload = json.dumps(
-        {"user_request": user_request, "candidate_sql": sql, "schemas": schemas},
+        {"user_request": user_request, "candidate_sql": sql, "schemas": schemas,
+         **({"confirmed_business_knowledge": knowledge} if knowledge else {})},
         ensure_ascii=False,
         allow_nan=False,
     )
     return [SystemMessage(content=SEMANTIC_REVIEW_PROMPT + (
         CONVERSATION_RULES if conversation_mode else ""
-    )), HumanMessage(content=payload)]
+    ) + (KNOWLEDGE_RULES if knowledge else "")), HumanMessage(content=payload)]
 
 
 def parse_review(response: dict) -> SemanticReview:

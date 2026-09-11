@@ -125,18 +125,22 @@ class IntentError(Exception):
 
 def intent_messages(
     user_request: str, schemas: list[dict], *, conversation_mode: bool = False,
+    knowledge: list[dict] | None = None,
 ) -> list[BaseMessage]:
     """Create fresh messages without a candidate or a previous model's explanation."""
+    from db_agent.knowledge import KNOWLEDGE_RULES
+
     try:
         payload = json.dumps(
-            {"user_request": user_request, "schemas": schemas},
+            {"user_request": user_request, "schemas": schemas,
+             **({"confirmed_business_knowledge": knowledge} if knowledge else {})},
             ensure_ascii=False, allow_nan=False,
         )
     except (TypeError, ValueError):
         raise IntentError() from None
     return [SystemMessage(content=INTENT_PROMPT + (
         CONVERSATION_RULES if conversation_mode else ""
-    )), HumanMessage(content=payload)]
+    ) + (KNOWLEDGE_RULES if knowledge else "")), HumanMessage(content=payload)]
 
 
 def parse_intent(response: dict) -> QueryIntent:

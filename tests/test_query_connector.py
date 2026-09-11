@@ -468,3 +468,76 @@ def test_cancellation_propagates_and_never_drains_cursor(settings, limits, drive
         assert not any(cursor.closed for cursor in connection.business_cursors)
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["revoked", "timeout"])
+def test_service_owned_knowledge_veto_after_plan_prevents_select(settings, limits, driver, failure):
+    from db_agent.knowledge import KnowledgeError
+
+    connection = QueryConnection()
+    driver[0].append(connection)
+    visited = []
+
+    async def veto(actual):
+        assert actual is connection
+        assert any(query.startswith("EXPLAIN FORMAT=JSON") for query, _ in actual.queries)
+        assert actual.server_status & 0x2001 == 0x2001
+        visited.append(True)
+        if failure == "timeout":
+            raise TimeoutError()
+        raise KnowledgeError("KNOWLEDGE_CHANGED")
+
+    outcome = asyncio.run(MetadataConnector(settings).execute_checked(
+        SQL, *limits, before_select=veto,
+    ))
+    assert visited == [True]
+    assert outcome["result"] is None and outcome["decision"] == "UNKNOWN"
+    assert outcome["execution_status"] == "not_started"
+    assert outcome["error"]["code"] == (
+        "TIMEOUT" if failure == "timeout" else "KNOWLEDGE_CHANGED"
+    )
+    assert (SQL, None) not in connection.queries and connection.closed
+
+
+def test_service_owned_guard_never_bypasses_original_sql_policy(settings, limits, driver):
+    async def guard(connection):
+        pytest.fail("forbidden SQL must be rejected before any optional guard")
+
+    outcome = asyncio.run(MetadataConnector(settings).execute_checked(
+        "DELETE FROM orders", *limits, before_select=guard,
+    ))
+    assert outcome["decision"] == "BLOCK"
+    assert outcome["execution_status"] == "not_started"
+    assert not driver[1]
+
+
+def test_knowledge_final_check_shares_analysis_deadline(settings, limits, driver):
+    connection = QueryConnection()
+    driver[0].append(connection)
+
+    async def slow_guard(actual):
+        await asyncio.sleep(0.04)
+
+    analysis = limits[0].model_copy(update={"timeout_seconds": 0.01})
+    outcome = asyncio.run(MetadataConnector(settings).execute_checked(
+        SQL, analysis, limits[1], before_select=slow_guard,
+    ))
+    assert outcome["decision"] == "UNKNOWN"
+    assert outcome["error"]["code"] == "TIMEOUT"
+    assert outcome["execution_status"] == "not_started" and outcome["result"] is None
+    assert (SQL, None) not in connection.queries and connection.closed
+
+
+def test_transaction_state_checked_after_final_knowledge_interaction(settings, limits, driver):
+    connection = QueryConnection()
+    driver[0].append(connection)
+
+    async def state_changed(actual):
+        actual.server_status = 0
+
+    outcome = asyncio.run(MetadataConnector(settings).execute_checked(
+        SQL, *limits, before_select=state_changed,
+    ))
+    assert outcome["error"]["code"] == "TRANSACTION_STATE"
+    assert outcome["execution_status"] == "not_started"
+    assert (SQL, None) not in connection.queries
