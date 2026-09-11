@@ -58,6 +58,8 @@ JSON 保留原始报告、列数组、行数组、精确数值字符串、NULL �
 | 构建与格式 | `npm --prefix frontend run build`、`npm --prefix frontend run format:check`、`uv run ruff check .`、`git diff --check` | 通过 |
 | Python 打包 | `uv build --no-build-isolation`、`.venv/bin/python scripts/check_distribution.py` | wheel/sdist 通过，不含本地凭据、结果或前端构建产物 |
 
+实现提交 `74e1e2ced7d7f1a1b3de305068f3b844eed4ff21` 已在 [CI 34564585740](https://github.com/erha1499/db-agent/actions/runs/34564585740) 完成五个 job：Python 3.11/3.13 离线回归、Chromium HTTP 合同、runner 上的真实 MySQL 集成与锁定构建安装均成功；收尾提交以 [PR #3](https://github.com/erha1499/db-agent/pull/3) 最新 HEAD 对应运行结果为准。
+
 真实页面运行在独立 worktree 的 `127.0.0.1:8016`，仅用原项目明确授权的 `.env`（忽略的符号链接）与既有合成数据，未修改原项目、权限或数据库内容：
 
 - **6 行订单 → 对比/趋势 → HTML/JSON → 重新打开历史**：真实 Agent 完成一次模型生成、需求核对、最终复核及受控查询，`ALLOW / completed`、未截断。独立预期来自 [mysql_business.sql](../tests/fixtures/mysql_business.sql)：paid 的 100+30+0 为 `130.00`，cancelled/refunded 各 `50.00`，pending 为 `0.00`；6个创建时间点首末差为 `-50.00`。下载 JSON 的原始结果逐项等于实际报告，HTML 包含图表、SQL和相同值。
