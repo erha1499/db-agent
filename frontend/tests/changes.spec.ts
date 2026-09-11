@@ -67,6 +67,7 @@ async function setup(context: BrowserContext) {
         database: 'db_agent',
         database_configured: true,
         model_configured: false,
+        changes_enabled: state.enabled,
         identity,
         active_run_id: null,
       });
@@ -225,12 +226,14 @@ test('pending execution disables duplicate dispatch and all other actions', asyn
   await expect(page.locator('.knowledge-detail .knowledge-state')).toHaveText('已确认提交');
 });
 
-test('disabled identity or source has no enabled change form', async ({ page, context }) => {
+test('disabled identity or source has no change entry or form', async ({ page, context }) => {
   const { state, calls } = await setup(context);
   state.enabled = false;
-  await open(page);
-  await expect(page.getByRole('button', { name: '新建变更预览', exact: true })).toBeDisabled();
-  await expect(page.locator('.changes-panel')).toContainText('当前身份或数据源未启用受控变更');
+  await page.goto('/');
+  await expect(page.locator('.app-shell')).toBeVisible();
+  await expect(page.getByRole('button', { name: '受控变更', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '新建变更预览', exact: true })).toHaveCount(0);
+  await expect(page.locator('.changes-panel')).toHaveCount(0);
   expect(
     calls.filter((call) => call.path.startsWith('/changes') && call.method === 'POST'),
   ).toHaveLength(0);

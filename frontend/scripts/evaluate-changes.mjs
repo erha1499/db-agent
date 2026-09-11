@@ -94,18 +94,25 @@ try {
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: '退出登录', exact: true }).click();
     await login('bob');
-    await page.getByRole('button', { name: '受控变更', exact: true }).click();
-    await expect(panel.getByRole('button', { name: '新建变更预览' })).toBeDisabled();
-    const status = await page.evaluate(async (id) => {
+    await expect(page.getByRole('button', { name: '受控变更', exact: true })).toHaveCount(0);
+    await expect(panel).toHaveCount(0);
+    const access = await page.evaluate(async (id) => {
       const headers = { 'X-DB-Agent-Client': 'web' };
       const session = await (await fetch('/api/auth/session', { headers })).json();
-      return (await fetch(`/api/changes/${id}`, { headers: { ...headers, 'X-DB-Agent-Session': session.session_id } })).status;
+      const options = { headers: { ...headers, 'X-DB-Agent-Session': session.session_id } };
+      const workspace = await (await fetch('/api/status', options)).json();
+      const changes = await (await fetch('/api/changes', options)).json();
+      return { enabled: workspace.changes_enabled, changes,
+        otherUserStatus: (await fetch(`/api/changes/${id}`, options)).status };
     }, original.plan.id);
-    expect(status).toBe(400);
+    expect(access.enabled).toBe(false);
+    expect(access.changes).toEqual({ targets: [], changes: [], can_approve: false });
+    expect(access.otherUserStatus).toBe(400);
   });
   await check('narrow_layout_and_no_model_dispatch', async () => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(panel).toBeVisible();
+    await expect(page.locator('.app-shell')).toBeVisible();
+    await expect(panel).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     expect(actions.some((path) => /\/runs$/.test(path))).toBe(false);
     await page.screenshot({ path: join(input.output_dir, 'bob-mobile.png'), fullPage: true });
