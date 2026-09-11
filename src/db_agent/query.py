@@ -19,11 +19,13 @@ class QueryService:
         analysis_limits: AnalysisSettings,
         query_limits: QuerySettings,
         record: RunRecord | None = None,
+        *, before_select=None,
     ):
         self.connector = connector
         self.analysis_limits = analysis_limits.model_copy(deep=True)
         self.query_limits = query_limits.model_copy(deep=True)
         self.record = record
+        self.before_select = before_select
 
     async def execute(self, sql: str) -> dict:
         started = time.monotonic()
@@ -51,7 +53,8 @@ class QueryService:
         try:
             # All authorization and plan checks live inside the connector entry point.
             evidence = await self.connector.execute_checked(
-                sql, self.analysis_limits, self.query_limits
+                sql, self.analysis_limits, self.query_limits,
+                **({"before_select": self.before_select} if self.before_select else {}),
             )
             checked, assessment = evidence["check"], evidence["assessment"]
             result = evidence["result"]

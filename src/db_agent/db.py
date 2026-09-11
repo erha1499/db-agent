@@ -59,6 +59,13 @@ class MetadataConnector:
         return self._settings.database
 
     @property
+    def knowledge_scope(self) -> str:
+        """Opaque source/account/allowlist binding; never exposes credentials."""
+        from db_agent.conversations import source_scope
+
+        return source_scope(self._settings)
+
+    @property
     def authorized_table_candidates(self) -> tuple[str, ...]:
         """Configured candidates only; existence and structure require metadata reads."""
         return tuple(sorted(self.validate_table(name) for name in self._settings.allowed_tables))
@@ -85,6 +92,7 @@ class MetadataConnector:
 
     async def execute_checked(
         self, sql: str, analysis_limits: AnalysisSettings, query_limits: QuerySettings,
+        *, before_select=None,
     ) -> dict:
         """Plan and execute the current SQL in one connection; no cached approval input."""
         started = time.monotonic()
@@ -101,7 +109,10 @@ class MetadataConnector:
             if remaining <= 0:
                 raise DatabaseError("TIMEOUT", "查询操作超过总时间预算，尚未派发业务 SQL")
             async with self._connection(timeout_seconds=remaining) as connection:
-                async with asyncio.timeout(analysis_limits.timeout_seconds):
+                analysis_deadline = (
+                    asyncio.get_running_loop().time() + analysis_limits.timeout_seconds
+                )
+                async with asyncio.timeout_at(analysis_deadline):
                     await self._fetch(connection, "SET SESSION time_zone = '+00:00'", (), [])
                     await self._fetch(
                         connection, "SET SESSION transaction_isolation = 'READ-COMMITTED'", (), [],
@@ -134,6 +145,11 @@ class MetadataConnector:
                 # aiomysql refreshes server_status on this OK packet, not SELECT EOF.
                 self._require_readonly_transaction(connection)
                 cursor = await connection.cursor(aiomysql.SSCursor)
+                if before_select is not None:
+                    # The veto shares the original analysis deadline; it adds no budget.
+                    async with asyncio.timeout_at(analysis_deadline):
+                        await before_select(connection)
+                    self._require_readonly_transaction(connection)
                 self._authorize()
                 phase = "execution"
                 async with asyncio.timeout(query_limits.execution_timeout_seconds):
@@ -335,107 +351,116 @@ class MetadataConnector:
             return self._bounded_result(result)
 
     async def describe_table(self, table: str) -> dict:
+        self.validate_table(table)
+        async with self._connection() as connection:
+            return await self._describe_on_connection(connection, table)
+
+    async def describe_for_query(self, connection, table: str) -> dict:
+        """Internal service hook: metadata on the already guarded SELECT connection."""
+        async with asyncio.timeout(self._settings.metadata_timeout_seconds):
+            return await self._describe_on_connection(connection, table)
+
+    async def _describe_on_connection(self, connection, table: str) -> dict:
         table = self.validate_table(table)
         allowed = tuple(self.validate_table(name) for name in self._settings.allowed_tables)
         result = {"database": self._settings.database, "table": table}
         all_rows = []
-        async with self._connection() as connection:
-            tables = await self._fetch(
-                connection,
-                """
-                    SELECT TABLE_TYPE AS type
-                    FROM information_schema.TABLES
-                    WHERE CAST(TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
-                      AND CAST(TABLE_NAME AS BINARY) = CAST(%s AS BINARY)
-                    LIMIT 1
-                """,
-                (self._settings.database, table),
-                [],
-            )
-            if not tables:
-                raise DatabaseError("TABLE_NOT_FOUND", "授权表不存在或当前数据库账号不可见")
-            if tables[0]["type"] != "BASE TABLE":
-                raise DatabaseError("UNSUPPORTED_TABLE", "当前仅支持基础表，不支持视图等对象")
-            result["columns"] = await self._fetch(
-                connection,
-                """
-                    SELECT COLUMN_NAME AS name, COLUMN_TYPE AS type,
-                           IS_NULLABLE AS nullable, ORDINAL_POSITION AS position
-                    FROM information_schema.COLUMNS
-                    WHERE CAST(TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
-                      AND CAST(TABLE_NAME AS BINARY) = CAST(%s AS BINARY)
-                    ORDER BY ORDINAL_POSITION
-                    LIMIT %s
-                """,
-                (self._settings.database, table, self._settings.max_metadata_rows + 1),
-                all_rows,
-            )
-            if not result["columns"]:
-                raise DatabaseError("TABLE_NOT_FOUND", "授权表不存在或当前数据库账号不可见")
-            indexes = await self._fetch(
-                connection,
-                """
-                    SELECT INDEX_NAME AS name, NON_UNIQUE AS non_unique,
-                           COLUMN_NAME AS column_name, SEQ_IN_INDEX AS position,
-                           INDEX_TYPE AS type
-                    FROM information_schema.STATISTICS
-                    WHERE CAST(TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
-                      AND CAST(TABLE_NAME AS BINARY) = CAST(%s AS BINARY)
-                    ORDER BY INDEX_NAME, SEQ_IN_INDEX
-                    LIMIT %s
-                """,
-                (
-                    self._settings.database,
-                    table,
-                    self._settings.max_metadata_rows - len(all_rows) + 1,
-                ),
-                all_rows,
-            )
-            result["indexes"] = [
-                {
-                    "name": row["name"],
-                    "unique": row["non_unique"] == 0,
-                    "column": row["column_name"],
-                    "position": row["position"],
-                    "type": row["type"],
-                }
-                for row in indexes
-            ]
-            placeholders = ", ".join("%s" for _ in allowed)
-            foreign_key_rows = await self._fetch(
-                connection,
-                f"""
-                    SELECT k.CONSTRAINT_NAME AS name, k.COLUMN_NAME AS column_name,
-                           k.ORDINAL_POSITION AS position,
-                           k.REFERENCED_TABLE_SCHEMA AS referenced_schema,
-                           k.REFERENCED_TABLE_NAME AS referenced_table,
-                           k.REFERENCED_COLUMN_NAME AS referenced_column,
-                           t.TABLE_TYPE AS referenced_type,
-                           COUNT(*) OVER (
-                               PARTITION BY CAST(k.CONSTRAINT_NAME AS BINARY)
-                           ) AS component_count
-                    FROM information_schema.KEY_COLUMN_USAGE AS k
-                    INNER JOIN information_schema.TABLES AS t
-                      ON CAST(t.TABLE_SCHEMA AS BINARY) = CAST(k.REFERENCED_TABLE_SCHEMA AS BINARY)
-                     AND CAST(t.TABLE_NAME AS BINARY) = CAST(k.REFERENCED_TABLE_NAME AS BINARY)
-                    WHERE CAST(k.TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
-                      AND CAST(k.TABLE_NAME AS BINARY) = CAST(%s AS BINARY)
-                      AND CAST(k.REFERENCED_TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
-                      AND CAST(k.REFERENCED_TABLE_NAME AS BINARY) IN ({placeholders})
-                      AND t.TABLE_TYPE = 'BASE TABLE'
-                    ORDER BY CAST(k.CONSTRAINT_NAME AS BINARY), k.ORDINAL_POSITION
-                    LIMIT %s
-                """,
-                (
-                    self._settings.database, table, self._settings.database, *allowed,
-                    self._settings.max_metadata_rows - len(all_rows) + 1,
-                ),
-                all_rows,
-            )
-            result["foreign_keys"] = self._foreign_keys(foreign_key_rows, result["columns"])
-            # Absence within this scope does not reveal relationships to hidden targets.
-            result["foreign_keys_scope"] = "current_database_authorized_tables"
-            return self._bounded_result(result)
+        tables = await self._fetch(
+            connection,
+            """
+                SELECT TABLE_TYPE AS type
+                FROM information_schema.TABLES
+                WHERE CAST(TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
+                  AND CAST(TABLE_NAME AS BINARY) = CAST(%s AS BINARY)
+                LIMIT 1
+            """,
+            (self._settings.database, table),
+            [],
+        )
+        if not tables:
+            raise DatabaseError("TABLE_NOT_FOUND", "授权表不存在或当前数据库账号不可见")
+        if tables[0]["type"] != "BASE TABLE":
+            raise DatabaseError("UNSUPPORTED_TABLE", "当前仅支持基础表，不支持视图等对象")
+        result["columns"] = await self._fetch(
+            connection,
+            """
+                SELECT COLUMN_NAME AS name, COLUMN_TYPE AS type,
+                       IS_NULLABLE AS nullable, ORDINAL_POSITION AS position
+                FROM information_schema.COLUMNS
+                WHERE CAST(TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
+                  AND CAST(TABLE_NAME AS BINARY) = CAST(%s AS BINARY)
+                ORDER BY ORDINAL_POSITION
+                LIMIT %s
+            """,
+            (self._settings.database, table, self._settings.max_metadata_rows + 1),
+            all_rows,
+        )
+        if not result["columns"]:
+            raise DatabaseError("TABLE_NOT_FOUND", "授权表不存在或当前数据库账号不可见")
+        indexes = await self._fetch(
+            connection,
+            """
+                SELECT INDEX_NAME AS name, NON_UNIQUE AS non_unique,
+                       COLUMN_NAME AS column_name, SEQ_IN_INDEX AS position,
+                       INDEX_TYPE AS type
+                FROM information_schema.STATISTICS
+                WHERE CAST(TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
+                  AND CAST(TABLE_NAME AS BINARY) = CAST(%s AS BINARY)
+                ORDER BY INDEX_NAME, SEQ_IN_INDEX
+                LIMIT %s
+            """,
+            (
+                self._settings.database,
+                table,
+                self._settings.max_metadata_rows - len(all_rows) + 1,
+            ),
+            all_rows,
+        )
+        result["indexes"] = [
+            {
+                "name": row["name"],
+                "unique": row["non_unique"] == 0,
+                "column": row["column_name"],
+                "position": row["position"],
+                "type": row["type"],
+            }
+            for row in indexes
+        ]
+        placeholders = ", ".join("%s" for _ in allowed)
+        foreign_key_rows = await self._fetch(
+            connection,
+            f"""
+                SELECT k.CONSTRAINT_NAME AS name, k.COLUMN_NAME AS column_name,
+                       k.ORDINAL_POSITION AS position,
+                       k.REFERENCED_TABLE_SCHEMA AS referenced_schema,
+                       k.REFERENCED_TABLE_NAME AS referenced_table,
+                       k.REFERENCED_COLUMN_NAME AS referenced_column,
+                       t.TABLE_TYPE AS referenced_type,
+                       COUNT(*) OVER (
+                           PARTITION BY CAST(k.CONSTRAINT_NAME AS BINARY)
+                       ) AS component_count
+                FROM information_schema.KEY_COLUMN_USAGE AS k
+                INNER JOIN information_schema.TABLES AS t
+                  ON CAST(t.TABLE_SCHEMA AS BINARY) = CAST(k.REFERENCED_TABLE_SCHEMA AS BINARY)
+                 AND CAST(t.TABLE_NAME AS BINARY) = CAST(k.REFERENCED_TABLE_NAME AS BINARY)
+                WHERE CAST(k.TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
+                  AND CAST(k.TABLE_NAME AS BINARY) = CAST(%s AS BINARY)
+                  AND CAST(k.REFERENCED_TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
+                  AND CAST(k.REFERENCED_TABLE_NAME AS BINARY) IN ({placeholders})
+                  AND t.TABLE_TYPE = 'BASE TABLE'
+                ORDER BY CAST(k.CONSTRAINT_NAME AS BINARY), k.ORDINAL_POSITION
+                LIMIT %s
+            """,
+            (
+                self._settings.database, table, self._settings.database, *allowed,
+                self._settings.max_metadata_rows - len(all_rows) + 1,
+            ),
+            all_rows,
+        )
+        result["foreign_keys"] = self._foreign_keys(foreign_key_rows, result["columns"])
+        # Absence within this scope does not reveal relationships to hidden targets.
+        result["foreign_keys_scope"] = "current_database_authorized_tables"
+        return self._bounded_result(result)
 
     def _foreign_keys(self, rows: list, columns: list) -> list[dict]:
         source_columns = {column["name"] for column in columns}

@@ -186,3 +186,47 @@ def test_real_literal_changes_do_not_reuse_results_or_authorization(connector):
     assert first["sql_fingerprint"] == second["sql_fingerprint"]
     assert first["query_id"] != second["query_id"]
     assert first["result_id"] != second["result_id"]
+
+
+@pytest.mark.parametrize("revoke", [False, True])
+def test_real_knowledge_metadata_and_lifecycle_on_select_connection(connector, tmp_path, revoke):
+    from datetime import UTC, datetime, timedelta
+
+    from db_agent.knowledge import KnowledgeContext, KnowledgeStore
+
+    store = KnowledgeStore(tmp_path / "knowledge" / "store.sqlite3")
+    limits = AnalysisSettings(_env_file=None)
+    raw = json.dumps({
+        "kind": "metric", "title": "synthetic paid order count",
+        "definition": "Count orders whose status is paid.",
+        "source": "tests/fixtures/mysql_business.sql", "source_version": "fixture-v1",
+        "invalidation_condition": "Revoke if status semantics change.",
+        "expires_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+        "tables": ["orders"],
+    }).encode()
+
+    async def exercise():
+        draft = store.create(raw, connector, limits)
+        item = await store.confirm(draft["id"], draft["digest"], connector, limits)
+        context = KnowledgeContext([item["id"]], connector, limits, store)
+        current = {"orders": await connector.describe_table("orders")}
+        context.validate(current)
+
+        async def guard(connection):
+            fresh = {"orders": await connector.describe_for_query(connection, "orders")}
+            if revoke:
+                store.revoke(item["id"], connector.knowledge_scope, "synthetic lifecycle veto")
+            context.validate(fresh)
+
+        return await QueryService(
+            connector, limits, QuerySettings(_env_file=None), before_select=guard,
+        ).execute("SELECT COUNT(*) AS n FROM orders WHERE status = 'paid'")
+
+    report = asyncio.run(exercise())
+    if revoke:
+        assert report["status"] == "error" and report["result"] is None
+        assert report["execution_status"] == "not_started"
+        assert report["error"]["code"] == "KNOWLEDGE_UNAVAILABLE"
+    else:
+        assert report["status"] == "ok" and report["execution_status"] == "completed"
+        assert report["result"]["rows"] == [[3]]

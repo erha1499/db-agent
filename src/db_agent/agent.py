@@ -31,6 +31,7 @@ from db_agent.intents import (
     parse_intent,
     select_candidate,
 )
+from db_agent.knowledge import KNOWLEDGE_RULES, KnowledgeContext, KnowledgeError, references
 from db_agent.presentation import AgentRunResult, QueryExecution, render_queries
 from db_agent.query import QueryService
 from db_agent.records import RunRecord
@@ -115,8 +116,10 @@ class RuntimeMiddleware(AgentMiddleware):
         analysis_limits: AnalysisSettings, executions: list[QueryExecution],
         conversation_mode: bool = False,
         analyses: list[QueryExecution] | None = None,
+        knowledge: KnowledgeContext | None = None,
     ):
         self.record = record
+        self.knowledge = knowledge
         self.tool_names = frozenset(tool_names)
         self.tool_lock = asyncio.Lock()
         self.model_calls = 0
@@ -198,6 +201,7 @@ class RuntimeMiddleware(AgentMiddleware):
         try:
             response = await self.reviewer.ainvoke(review_messages(
                 self.prompt, sql, schemas, conversation_mode=self.conversation_mode,
+                knowledge=self.knowledge.payload if self.knowledge else None,
             ))
             review = parse_review(response)
             self.semantic_reviews.append({"sql": sql, **review.model_dump()})
@@ -233,6 +237,7 @@ class RuntimeMiddleware(AgentMiddleware):
             # No candidate SQL or previous reasoning is passed to the interpreter.
             response = await self.interpreter.ainvoke(intent_messages(
                 self.prompt, schemas, conversation_mode=self.conversation_mode,
+                knowledge=self.knowledge.payload if self.knowledge else None,
             ))
             intent = parse_intent(response)
             self.query_intents.append({
@@ -263,6 +268,32 @@ class RuntimeMiddleware(AgentMiddleware):
                     call_id=str(call_id), duration_ms=round((time.monotonic() - started) * 1000),
                 )
 
+    async def validate_knowledge_dispatch(self, connection):
+        """Fresh bounded metadata in the SELECT transaction, then a final lifecycle veto."""
+        self.knowledge.validate_lifecycle()
+        schemas = {}
+        for table in self.knowledge.tables:
+            try:
+                self._claim_tool_call("describe_table")
+            except AgentResponseError:
+                raise KnowledgeError("KNOWLEDGE_LIMIT") from None
+            started, status = time.monotonic(), "error"
+            try:
+                schemas[table] = await self.connector.describe_for_query(connection, table)
+                status = "ok"
+            finally:
+                if self.record:
+                    self.record.emit(
+                        "tool_finished", operation="describe_table", status=status,
+                        duration_ms=round((time.monotonic() - started) * 1000),
+                    )
+        self.knowledge.validate(schemas)
+
+    def capture_query(self, execution):
+        if self.knowledge:
+            execution.report["business_knowledge"] = self.knowledge.evidence
+        self.executions.append(execution)
+
     async def _prepare_query(self, request):
         # Validate the original arguments before replacing a candidate. Never
         # discard an untrusted approved/target field to turn it into valid input.
@@ -275,6 +306,8 @@ class RuntimeMiddleware(AgentMiddleware):
             # Preserve the existing deterministic rejection report, without
             # asking a model to interpret or repair a forbidden operation.
             return request
+        if self.knowledge:
+            self.knowledge.validate_lifecycle()
         await self._query_schemas(checked.tables)
         # Include all structures actually retrieved in this run, so a candidate
         # omitting a previously inspected table cannot hide it from the contract.
@@ -444,9 +477,20 @@ async def run_agent_observed(
     """One bounded run, optionally using explicit request-only session context."""
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("问题不能为空")
+    try:
+        knowledge_ids = references(prompt)
+    except KnowledgeError as exc:
+        raise AgentResponseError(exc.message, code=exc.code) from None
     conversation_mode = previous_requests is not None
     if conversation_mode:
         prompt = conversation_prompt(previous_requests, prompt)
+    # A new turn must select knowledge explicitly. Never silently resolve an old ID.
+    if previous_requests and any(references(item) for item in previous_requests):
+        if not knowledge_ids:
+            raise AgentResponseError(
+                "上一轮使用了业务知识；请本轮显式引用，或新建会话完整重述新主题。",
+                code="KNOWLEDGE_REFERENCE_REQUIRED",
+            )
     executions: list[QueryExecution] = []
     analyses: list[QueryExecution] = []
     runtime = None
@@ -474,6 +518,11 @@ async def run_agent_observed(
             async with asyncio.timeout(settings.run_timeout_seconds):
                 tools = []
                 analysis_limits = analysis_settings or AnalysisSettings()
+                knowledge = KnowledgeContext(knowledge_ids, connector, analysis_limits) if (
+                    knowledge_ids and connector
+                ) else None
+                if knowledge_ids and connector is None:
+                    raise KnowledgeError()
                 if connector:
                     service = SqlAnalysisService(
                         connector, analysis_limits, record
@@ -488,14 +537,29 @@ async def run_agent_observed(
                 runtime = RuntimeMiddleware(
                     record, {tool.name for tool in tools}, settings=settings, model=model,
                     prompt=prompt, connector=connector, analysis_limits=analysis_limits,
-                    executions=executions, analyses=analyses,
+                    executions=executions, analyses=analyses, knowledge=knowledge,
                     conversation_mode=conversation_mode,
                 )
+                knowledge_context = ""
+                if knowledge:
+                    await runtime._query_schemas(knowledge.tables)
+                    knowledge.validate(runtime.schemas)
+                    if record:
+                        for item in knowledge.items:
+                            record.emit("knowledge_loaded", status="ok",
+                                        operation="business_knowledge", call_id=item["digest"])
+                    query_service.before_select = runtime.validate_knowledge_dispatch
+                    # Capture the source evidence from the service, never from model claims.
+                    tools[-1] = query_tool(query_service, runtime.capture_query)
+                    knowledge_context = json.dumps({
+                        "confirmed_business_knowledge": knowledge.payload,
+                        "current_knowledge_schemas": list(runtime.schemas.values()),
+                    }, ensure_ascii=False)
                 agent = create_agent(
                     model=model,
                     tools=tools,
                     system_prompt=(
-                        SYSTEM_PROMPT
+                        SYSTEM_PROMPT + (KNOWLEDGE_RULES if knowledge else "")
                         + (CONVERSATION_RULES if conversation_mode else "")
                         + "\n授权表名候选（仅配置，存在性、类型和结构未验证）：\n"
                         + json.dumps({
@@ -517,13 +581,20 @@ async def run_agent_observed(
                     ],
                 )
                 result = await agent.ainvoke(
-                    {"messages": [{"role": "user", "content": prompt}]},
+                    {"messages": [*([{"role": "user", "content": knowledge_context}]
+                                    if knowledge_context else []),
+                                  {"role": "user", "content": prompt}]},
                     config={
                         # Includes the framework-native query completion hook.
                         "recursion_limit": 6 * settings.max_model_calls + 5,
                         "max_concurrency": 1,
                     },
                 )
+        except KnowledgeError as exc:
+            raise AgentResponseError(
+                exc.message, code=exc.code,
+                observation=runtime.observation() if runtime else None,
+            ) from None
         except TimeoutError:
             raise AgentResponseError(
                 "运行超过总时间预算，已停止等待；数据库连接会关闭。", code="TIMEOUT",
@@ -551,6 +622,11 @@ async def run_agent_observed(
     query_calls = runtime.tool_calls.count("execute_query")
     if query_calls:
         return runtime.observation()
+    if runtime.knowledge:
+        try:
+            runtime.knowledge.validate_lifecycle()
+        except KnowledgeError as exc:
+            raise AgentResponseError(exc.message, code=exc.code) from None
     message = result["messages"][-1]
     if not isinstance(message, AIMessage) or message.tool_calls:
         raise AgentResponseError("模型返回了当前未支持的消息或工具调用")
