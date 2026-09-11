@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from db_agent.analysis import SqlAnalysisService
 from db_agent.config import AnalysisSettings, QuerySettings, Settings
+from db_agent.conversation_context import CONVERSATION_RULES, conversation_prompt
 from db_agent.db import DatabaseError, MetadataConnector
 from db_agent.intents import (
     IntentError,
@@ -112,6 +113,7 @@ class RuntimeMiddleware(AgentMiddleware):
         self, record: RunRecord | None, tool_names: set[str], *, settings: Settings,
         model, prompt: str, connector: MetadataConnector | None,
         analysis_limits: AnalysisSettings, executions: list[QueryExecution],
+        conversation_mode: bool = False,
     ):
         self.record = record
         self.tool_names = frozenset(tool_names)
@@ -121,6 +123,7 @@ class RuntimeMiddleware(AgentMiddleware):
         self.model_limit = settings.max_model_calls if connector else 1
         self.tool_limit = settings.max_tool_calls
         self.prompt = prompt
+        self.conversation_mode = conversation_mode
         self.connector = connector
         self.analysis_limits = analysis_limits
         self.executions = executions
@@ -191,7 +194,9 @@ class RuntimeMiddleware(AgentMiddleware):
         started = time.monotonic()
         status, code = "error", "SEMANTIC_REVIEW_FAILED"
         try:
-            response = await self.reviewer.ainvoke(review_messages(self.prompt, sql, schemas))
+            response = await self.reviewer.ainvoke(review_messages(
+                self.prompt, sql, schemas, conversation_mode=self.conversation_mode,
+            ))
             review = parse_review(response)
             self.semantic_reviews.append({"sql": sql, **review.model_dump()})
             status, code = "ok", review.verdict.upper()
@@ -224,7 +229,9 @@ class RuntimeMiddleware(AgentMiddleware):
         status, code = "error", "QUERY_INTENT_FAILED"
         try:
             # No candidate SQL or previous reasoning is passed to the interpreter.
-            response = await self.interpreter.ainvoke(intent_messages(self.prompt, schemas))
+            response = await self.interpreter.ainvoke(intent_messages(
+                self.prompt, schemas, conversation_mode=self.conversation_mode,
+            ))
             intent = parse_intent(response)
             self.query_intents.append({
                 "contract": intent.model_dump(),
@@ -411,10 +418,13 @@ async def run_agent(
     record: RunRecord | None = None,
     analysis_settings: AnalysisSettings | None = None,
     query_settings: QuerySettings | None = None,
+    *,
+    previous_requests: list[str] | None = None,
 ) -> str:
     """Compatibility entry point returning only the final answer."""
     result = await run_agent_observed(
         prompt, settings, connector, record, analysis_settings, query_settings,
+        previous_requests=previous_requests,
     )
     return result.answer
 
@@ -426,10 +436,15 @@ async def run_agent_observed(
     record: RunRecord | None = None,
     analysis_settings: AnalysisSettings | None = None,
     query_settings: QuerySettings | None = None,
+    *,
+    previous_requests: list[str] | None = None,
 ) -> AgentRunResult:
-    """One independent run with in-memory service evidence, never raw-data logs."""
-    if not prompt.strip():
+    """One bounded run, optionally using explicit request-only session context."""
+    if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("问题不能为空")
+    conversation_mode = previous_requests is not None
+    if conversation_mode:
+        prompt = conversation_prompt(previous_requests, prompt)
     executions: list[QueryExecution] = []
     runtime = None
 
@@ -471,19 +486,22 @@ async def run_agent_observed(
                     record, {tool.name for tool in tools}, settings=settings, model=model,
                     prompt=prompt, connector=connector, analysis_limits=analysis_limits,
                     executions=executions,
+                    conversation_mode=conversation_mode,
                 )
                 agent = create_agent(
                     model=model,
                     tools=tools,
                     system_prompt=(
                         SYSTEM_PROMPT
+                        + (CONVERSATION_RULES if conversation_mode else "")
                         + "\n授权表名候选（仅配置，存在性、类型和结构未验证）：\n"
                         + json.dumps({
                             "authorized_table_candidates": connector.authorized_table_candidates,
                         }, ensure_ascii=False)
                     )
                     if connector
-                    else "默认使用中文回答。当前未启用数据库工具。",
+                    else "默认使用中文回答。当前未启用数据库工具。"
+                    + (CONVERSATION_RULES if conversation_mode else ""),
                     middleware=[
                         runtime,
                         ModelCallLimitMiddleware(

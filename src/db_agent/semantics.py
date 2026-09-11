@@ -6,6 +6,8 @@ from typing import Annotated, Literal, Self
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from db_agent.conversation_context import CONVERSATION_RULES
+
 ShortEvidence = Annotated[
     str, Field(strict=True, min_length=1, max_length=240, pattern=r"\S"),
 ]
@@ -106,14 +108,18 @@ class SemanticReviewError(Exception):
         super().__init__("语义审查响应无效，未取得可确认结论。")
 
 
-def review_messages(user_request: str, sql: str, schemas: list[dict]) -> list[BaseMessage]:
+def review_messages(
+    user_request: str, sql: str, schemas: list[dict], *, conversation_mode: bool = False,
+) -> list[BaseMessage]:
     """Build a fresh context from the original task, candidate, and collected schemas only."""
     payload = json.dumps(
         {"user_request": user_request, "candidate_sql": sql, "schemas": schemas},
         ensure_ascii=False,
         allow_nan=False,
     )
-    return [SystemMessage(content=SEMANTIC_REVIEW_PROMPT), HumanMessage(content=payload)]
+    return [SystemMessage(content=SEMANTIC_REVIEW_PROMPT + (
+        CONVERSATION_RULES if conversation_mode else ""
+    )), HumanMessage(content=payload)]
 
 
 def parse_review(response: dict) -> SemanticReview:
