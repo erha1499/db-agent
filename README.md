@@ -57,7 +57,7 @@ GitHub Actions 的覆盖范围、锁定依赖的构建安装、目标环境验�
 [Web 使用说明](docs/web.md)提供常见 AI 对话界面，包括会话历史、智能查询、SQL 诊断、结果表格、表结构、运行进度和停止。保留 CLI `session` 的完整请求包与严格查询结果校验；Web 历史持久化到本机，仅成功查询的用户原始请求用于后续口径。
 
 ```bash
-npm --prefix frontend ci
+npm --prefix frontend ci --registry=https://registry.npmjs.org
 npm --prefix frontend run build
 uv run db-agent web
 ```

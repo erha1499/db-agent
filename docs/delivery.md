@@ -47,7 +47,9 @@ work/package-venv/bin/db-agent --help
 
 完成后可用 `uv sync --locked` 恢复开发环境。`dist/`、`work/`、`outputs/` 都不提交；构建步骤不执行上传。sdist 使用明确清单，CI 还放入合成的 `.env` 和 `outputs` 文件再检查产物，防止打包边界退化。安装/运行记录应保留 commit SHA、uv/Python 版本、锁文件 SHA256 和命令结果；锁定依赖版本不等于锁定主机内核或远端服务行为。
 
-源码包包含 `frontend` 源码、配置与 `package-lock.json`，排除 `node_modules`、前端 `dist`、Playwright 运行产物；CI 放入这些目录的合成文件后核对清单。Python wheel 只安装 Python 入口，不携带已构建页面。从源码启动 Web 时另用 Node 26.7.0/npm 11.19.0 执行 `npm --prefix frontend ci` 与 `npm --prefix frontend run build`，再按 [Web 说明](web.md)启动。前端回归入口为 `npm --prefix frontend run format:check`、`npm --prefix frontend run test:e2e`；首次运行需在 frontend 目录执行 `npx --no-install playwright install --with-deps chromium`。浏览器测试本身不需要模型或数据库。
+源码包包含 `frontend` 源码、配置与 `package-lock.json`，排除 `node_modules`、前端 `dist`、Playwright 运行产物；CI 放入这些目录的合成文件后核对清单。Python wheel 只安装 Python 入口，不携带已构建页面。从源码启动 Web 时另用 Node 26.7.0/npm 11.19.0 执行 `npm --prefix frontend ci --registry=https://registry.npmjs.org` 与 `npm --prefix frontend run build`，再按 [Web 说明](web.md)启动。前端回归入口为 `npm --prefix frontend run format:check`、`npm --prefix frontend run test:e2e`；首次运行需在 frontend 目录执行 `npx --no-install playwright install --with-deps chromium`。浏览器测试本身不需要模型或数据库。
+
+前端锁文件的全部 resolved 地址使用公开 npm registry，CI 在安装前检查公开 HTTPS 地址和 integrity，并显式设置 `NPM_CONFIG_REGISTRY`。首次完整远端运行曾被旧锁文件中的内部镜像地址阻断；已逐项核对176个锁定包的公开版本及对应 SHA512/SHA1 完整性值，仅替换下载 URL，不升级包或改写原哈希。[npm 对 registry 的定义](https://docs.npmjs.com/cli/v11/configuring-npm/package-lock-json/)说明公共 registry URL 会使用当前配置的 registry，因此在配置过其他镜像的机器上复现时仍要显式指定上述参数。
 
 ## 在明确目标上逐层验收
 
@@ -94,6 +96,8 @@ HTTP 事件钩子只记录实际发出的 token 字段、工具数量、非流�
 三个成功响应的提供方 completion 计数与框架 output 计数一致；这是同一响应的两种表示，不是独立计量。全部模式均确认自有客户端关闭、重试为 0。请求事件仅表示进入 HTTP 发送流程，不证明提供方已接收。此前开发中同一普通短提示还观察到 output=21；最终加入探针/锁文件指纹后重新运行得到上述131，两个样本均保存在本地，不把短样本变化解释为费用或性能统计。
 
 本次探针 SHA256 为 `522b2de430545698f4e85f9cd0f2a6657dd6ca6f41355b21ed34fc49fc8b3bab`，当时锁文件 SHA256 为 `ffff39a7a9c040fa0f8839d46f1fb8e6da66c21e3feb2c85e301f512a308ef21`。报告保留完整端点/模型哈希及上述原始关键字段于忽略的 `outputs/provider/final-*.json`，不提交模型标识、端点或响应正文。
+
+合入 Web 后，在提交 `8749cb8cafe9116fa6fc8bc5783e01f915c49cd0` 的整合环境于04:42:40–04:42:46 UTC 再次显式执行四个模式。探针及模型依赖版本未变，锁文件 SHA256 为 `79f4dfc96be2ddcf21ae394253dd37959b2b9e6311181ccd2daec0a2a96c4b61`。普通/工具两次协议仍通过，output分别36/78；低上限样本再次实际请求64却返回**513**（reasoning113、stop）。HTTP超时30 ms；总超时11 ms且未出现发送事件，因此后者只能证明派发前总时限生效。自有客户端全部关闭，报告为 `outputs/provider/integrated-*.json`。这次追加复核保留了前一次446的异常，不以新样本替换旧结果。
 
 这次核验确认了协议与客户端超时行为，并重现了计数超过请求上限的异常；没有证明提供方 token 硬上限、计费规则或服务器取消。该限制保留为交付边界，不能通过上调预算、修改风险规则或把观测退出码写成硬上限验收成功来消除。
 

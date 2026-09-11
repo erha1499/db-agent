@@ -26,6 +26,7 @@ jobs:
         working-directory: frontend
     env:
       CI: "true"
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -35,6 +36,20 @@ jobs:
           node-version: "26.7.0"
       - run: npm install --global npm@11.19.0
       - run: node --version && npm --version
+      - name: Require publicly reproducible package URLs
+        run: |
+          node --input-type=module - <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          for (const dependency of Object.values(lock.packages)) {
+            if (!dependency.resolved) continue;
+            const url = new URL(dependency.resolved);
+            assert(url.protocol === 'https:' && url.hostname === 'registry.npmjs.org'
+              && !url.username && !url.password && dependency.integrity,
+              'Lockfile dependencies must use public npm URLs with integrity hashes');
+          }
+          JS
       - run: npm ci
       - run: npm run format:check
       - run: npm run build
