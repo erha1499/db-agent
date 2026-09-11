@@ -8,7 +8,7 @@ Web 将现有数据库工具呈现为常见对话界面：左侧管理会话，�
 
 ```bash
 uv sync
-npm --prefix frontend ci
+npm --prefix frontend ci --registry=https://registry.npmjs.org
 npm --prefix frontend run build
 uv run db-agent web
 ```

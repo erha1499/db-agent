@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.7.6"
+
+jobs:
+  frontend:
+    name: Frontend / Chromium contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      CI: "true"
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "26.7.0"
+      - run: npm install --global npm@11.19.0
+      - run: node --version && npm --version
+      - name: Require publicly reproducible package URLs
+        run: |
+          node --input-type=module - <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          for (const dependency of Object.values(lock.packages)) {
+            if (!dependency.resolved) continue;
+            const url = new URL(dependency.resolved);
+            assert(url.protocol === 'https:' && url.hostname === 'registry.npmjs.org'
+              && !url.username && !url.password && dependency.integrity,
+              'Lockfile dependencies must use public npm URLs with integrity hashes');
+          }
+          JS
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run build
+      - run: npx --no-install playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - run: git diff --exit-code && git diff --check
+
+  offline:
+    name: Offline / Python ${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
+      - run: uv run --locked ruff check .
+      - run: uv run --locked pytest -q
+      - run: git diff --exit-code && git diff --check
+
+  mysql:
+    name: MySQL 8.4 / real integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+      - run: uv sync --locked
+      - name: Configure disposable local database
+        run: |
+          uv run --locked python - <<'PY'
+          import os
+          import secrets
+          from pathlib import Path
+
+          config = Path(".env")
+          config.touch(mode=0o600, exist_ok=False)
+          config.write_text(
+              "DB_AGENT_MYSQL_HOST=127.0.0.1\n"
+              "DB_AGENT_MYSQL_PORT=13306\n"
+              "DB_AGENT_MYSQL_DATABASE=db_agent\n"
+              "DB_AGENT_MYSQL_USER=db_agent_reader\n"
+              'DB_AGENT_MYSQL_ALLOWED_TABLES=["customers","orders","order_items"]\n'
+              f"DB_AGENT_MYSQL_PASSWORD={secrets.token_urlsafe(32)}\n"
+              f"DB_AGENT_MYSQL_ROOT_PASSWORD={secrets.token_urlsafe(32)}\n",
+              encoding="utf-8",
+          )
+          os.chmod(config, 0o600)
+          PY
+      - run: docker compose up -d --wait --wait-timeout 180
+      - run: uv run --locked python scripts/seed_local_mysql.py
+      - run: uv run --locked db-agent db check
+      - name: Real metadata, policy and query tests
+        env:
+          DB_AGENT_MYSQL_INTEGRATION: "1"
+        run: uv run --locked pytest tests/test_mysql_integration.py tests/test_mysql_query.py -q
+      - name: Real transaction and metadata lock tests
+        env:
+          DB_AGENT_MYSQL_DDL_INTEGRATION: "1"
+        run: uv run --locked pytest tests/test_mysql_query_isolation.py -q
+      - name: Stop disposable service (keep volume until runner disposal)
+        if: always()
+        run: docker compose stop mysql
+
+  package:
+    name: Locked build and installed CLI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+      - name: Install locked build dependencies and build distributions
+        run: |
+          uv sync --locked --group build --no-install-project
+          mkdir -p outputs work frontend/node_modules frontend/dist frontend/test-results
+          printf 'synthetic packaging canary\n' > .env
+          printf 'synthetic packaging canary\n' > outputs/do-not-package.txt
+          printf 'synthetic packaging canary\n' > frontend/node_modules/do-not-package.txt
+          printf 'synthetic packaging canary\n' > frontend/dist/do-not-package.txt
+          printf 'synthetic packaging canary\n' > frontend/test-results/do-not-package.txt
+          uv build --no-build-isolation
+          .venv/bin/python scripts/check_distribution.py
+          uv export --locked --no-dev --no-emit-project --output-file dist/requirements.txt
+      - name: Install wheel and locked runtime dependencies into a fresh environment
+        run: |
+          uv venv work/package-venv
+          uv pip install --python work/package-venv/bin/python --require-hashes -r dist/requirements.txt
+          uv pip install --python work/package-venv/bin/python --no-deps dist/db_agent-*.whl
+          uv pip check --python work/package-venv/bin/python
+          cd work
+          package-venv/bin/db-agent --help
+          package-venv/bin/python -m db_agent --help
+      - run: git diff --exit-code && git diff --check

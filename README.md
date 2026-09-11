@@ -8,7 +8,7 @@
 
 项目大步骤、完成状态和下一步优先级统一维护在 [TODO 清单](TODO.md)。开始新任务前先核对清单，再按本文查找运行方式与能力限制。
 
-已加入独立需求合同、完整 SQL 编译与最终复核，修复已知漏筛选与退款关联缺失问题。初始模型可从授权候选表名选择相关表，仍须读取实际结构；生成查询遵循现有 SQL 子集。第11步的真实 Agent 新题16/16、旧题61/64，超时或复核协议失败如实保留，详见[电商验收记录](docs/ecommerce.md#2026-09-11-v8-最终业务验收)。第12步已完成[会话内多轮查询](docs/conversations.md)的约定场景验收：固定验收集两次合计18/18轮（每次9/9）通过，开发集首次8/9、追加回归9/9；首次模型超时未计为成功。下一步是持续集成与可复现交付。
+已加入独立需求合同、完整 SQL 编译与最终复核，修复已知漏筛选与退款关联缺失问题。初始模型可从授权候选表名选择相关表，仍须读取实际结构；生成查询遵循现有 SQL 子集。第11步的真实 Agent 新题16/16、旧题61/64，超时或复核协议失败如实保留，详见[电商验收记录](docs/ecommerce.md#2026-09-11-v8-最终业务验收)。第12步已完成[会话内多轮查询](docs/conversations.md)的约定场景验收：固定验收集两次合计18/18轮（每次9/9）通过，开发集首次8/9、追加回归9/9；首次模型超时未计为成功。第13步[持续集成与可复现交付](docs/delivery.md)已通过真实 GitHub CI；提供方返回计数超请求的异常和硬上限限制继续保留。
 
 ## 快速开始
 
@@ -17,7 +17,7 @@
 ```bash
 git clone https://github.com/erha1499/db-agent.git
 cd db-agent
-uv sync
+uv sync --locked
 
 cp .env.example .env
 # 编辑本地 .env，填写三个模型必填配置后运行
@@ -50,12 +50,14 @@ git diff --check
 
 离线测试验证配置、静态规则、构造计划、连接器边界、结果处理与 Agent 协议；真实模型连通性单独通过 `check` 验证，数据库连接使用 `db check` 验证。实际诊断与查询链路使用下方 `db analyze` / `db query` / `chat`，不同层次的验证不能互相替代。
 
+GitHub Actions 的覆盖范围、锁定依赖的构建安装、目标环境验收和显式提供方核验见[持续集成与可复现交付](docs/delivery.md)。CI 状态以当前 PR HEAD 对应的远端运行结果为准；默认不运行真实模型评测。
+
 ## 本地 Web 页面
 
 [Web 使用说明](docs/web.md)提供常见 AI 对话界面，包括会话历史、智能查询、SQL 诊断、结果表格、表结构、运行进度和停止。保留 CLI `session` 的完整请求包与严格查询结果校验；Web 历史持久化到本机，仅成功查询的用户原始请求用于后续口径。
 
 ```bash
-npm --prefix frontend ci
+npm --prefix frontend ci --registry=https://registry.npmjs.org
 npm --prefix frontend run build
 uv run db-agent web
 ```
