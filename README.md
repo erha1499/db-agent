@@ -4,7 +4,7 @@
 
 首版采用 **Python + LangChain + OpenAI 兼容模型接口**。使用 LangChain 的 `create_agent` 管理模型和工具协议，减少基础运行时开发，把精力放在数据库业务、执行边界和验证上。
 
-> **当前状态：已提供 SQL 预检、普通 EXPLAIN 诊断、受控 SELECT、会话内多轮查询、经确认的跨会话业务知识、需登录的本机多身份 Web 页面和固定电商业务评测。** CLI 和 Agent 可以读取授权表结构、获取 MySQL 8.4 的真实计划，并在执行入口重新检查后查询业务数据。查询回答根据工具实际报告生成；支持百万订单合成数据的分批导入与独立口径验收。业务知识通过本机 CLI 或登录后的 Web 面板分别管理、持久化和显式引用，详见[业务知识说明](docs/knowledge.md)。通用结果等价验证和数据库变更尚未实现。
+> **当前状态：已提供 SQL 预检、普通 EXPLAIN 诊断、受控 SELECT、会话内多轮查询、经确认的跨会话业务知识、需登录的本机多身份 Web 页面和固定电商业务评测。** CLI 和 Agent 可以读取授权表结构、获取 MySQL 8.4 的真实计划，并在执行入口重新检查后查询业务数据。查询回答根据工具实际报告生成；支持百万订单合成数据的分批导入与独立口径验收。业务知识通过本机 CLI 或登录后的 Web 面板分别管理、持久化和显式引用，详见[业务知识说明](docs/knowledge.md)。已提供原/候选 SQL 的同快照结果核对和优化观测，详见[SQL 优化验证](docs/optimization.md)。通用 SQL 等价证明和数据库变更尚未实现。
 
 项目大步骤、完成状态和下一步优先级统一维护在 [TODO 清单](TODO.md)。开始新任务前先核对清单，再按本文查找运行方式与能力限制。
 
@@ -167,6 +167,18 @@ uv run db-agent chat '分析 SELECT id, customer_id FROM orders ORDER BY created
 阈值是初始策略，需结合目标环境校准；不是实测耗时或生产安全保证。报告额外有固定 8 KiB 元数据预算。每个报告包含 `report_id`、策略版本、时间、数据库、结构指纹、规则与证据；结构指纹去掉字面值，仅用于关联同形 SQL，不是参数绑定凭证或执行授权。基础表校验与计划采集不是整个数据库的原子快照。超时关闭连接并停止等待，不能据此声称服务器已取消查询。
 
 `db analyze` 的四种 `decision` 都只返回报告，不执行业务 SQL。该命令成功生成报告时退出码为 `0`，包括 `BLOCK` / `REVIEW` / `UNKNOWN`；配置错误为 `2`、报告外运行失败为 `1`，脚本必须读取 `decision`。业务拒绝也会正常回填给主模型解释。
+
+### SQL 优化验证
+
+`db compare` 实际执行原 SQL 与候选 SQL，使用同一受控执行内核与只读一致性快照，按列位置、完整行、多重集或排序核对结果；任一拒绝、截断、错误或缺证据均不能确认相等。直接入口不调用模型，双方仍分别完成全部原预检。
+
+```bash
+uv run db-agent db compare \
+  --original 'SELECT id FROM orders WHERE id + 0 = 1002' \
+  --candidate 'SELECT id FROM orders WHERE id = 1002' --repeat 3
+```
+
+敏感输入使用 `db compare --stdin` 的有界 `original` / `candidate` JSON。报告给出实际计划估算与客户端派发/读取耗时，区分本次完整结果一致、独立业务 oracle 和通用等价证明。`observed_equal` / `different` / `inconclusive` 分别退出 0 / 4 / 1，输入配置错误退出 2。重复 1–3 对，每对共用原 15 秒总预算；不放宽扫描阈值。独立边界案例、真实百万订单范围观测和完整限制见[优化验证说明](docs/optimization.md)。
 
 ### 受控业务查询
 

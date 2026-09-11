@@ -118,7 +118,7 @@ jobs:
       - name: Real metadata, policy and query tests
         env:
           DB_AGENT_MYSQL_INTEGRATION: "1"
-        run: uv run --locked pytest tests/test_mysql_integration.py tests/test_mysql_query.py -q
+        run: uv run --locked pytest tests/test_mysql_integration.py tests/test_mysql_query.py tests/test_mysql_optimization.py tests/test_identity_optimization.py -q
       - name: Real transaction and metadata lock tests
         env:
           DB_AGENT_MYSQL_DDL_INTEGRATION: "1"
