@@ -1,4 +1,4 @@
-"""Deterministic, offline admission checks for the supported MySQL SELECT subset.
+"""Deterministic, offline admission checks for supported MySQL/PostgreSQL SELECT.
 
 SQLGlot is a parser, not an authorization boundary. Raw lexical checks, an exact
 AST allowlist and server-owned object scope are all required before plan capture.
@@ -18,6 +18,7 @@ from db_agent.config import AnalysisSettings
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 _INTEGER = re.compile(r"[0-9]+\Z")
+_POSTGRES_NUMBER = re.compile(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
 _WRITE_STARTS = {
     "ALTER", "ANALYZE", "CALL", "COMMIT", "CREATE", "DELETE", "DO", "DROP",
     "EXECUTE", "EXPLAIN", "GRANT", "INSERT", "KILL", "LOAD", "LOCK", "MERGE",
@@ -27,7 +28,9 @@ _WRITE_STARTS = {
 _AGGREGATES = {exp.Count, exp.Sum, exp.Avg, exp.Min, exp.Max}
 _AGGREGATE_NAMES = {"COUNT", "SUM", "AVG", "MIN", "MAX"}
 _PAREN_KEYWORDS = {"SELECT", "FROM", "WHERE", "ON", "AND", "OR", "NOT", "IN",
-                   "HAVING", "BY", "AS", "BETWEEN", "USING", "INDEX"}
+                   "HAVING", "BY", "AS", "BETWEEN", "USING", "INDEX", "WHEN", "THEN",
+                   "ELSE", "CASE"}
+_POSTGRES_SYSTEM_COLUMNS = {"tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"}
 _BINARY = {
     exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Mod, exp.EQ, exp.NEQ, exp.GT, exp.GTE,
     exp.LT, exp.LTE, exp.And, exp.Or,
@@ -49,6 +52,9 @@ _ALLOWED_ARGS: dict[type[exp.Expression], set[str]] = {
     exp.Avg: {"this"},
     exp.Min: {"this"},
     exp.Max: {"this"},
+    # If is the parser's WHEN container, never permission to invoke IF(...).
+    exp.Case: {"ifs", "default"},
+    exp.If: {"this", "true"},
     exp.Neg: {"this"},
     exp.Paren: {"this"},
     exp.Not: {"this"},
@@ -83,7 +89,9 @@ def _result(decision: str, rule_id: str, message: str) -> SqlCheck:
     return SqlCheck(decision, ({"rule_id": rule_id, "message": message},))
 
 
-def _lexical_check(sql: str, limits: AnalysisSettings) -> tuple[SqlCheck | None, list[str]]:
+def _lexical_check(
+    sql: str, limits: AnalysisSettings, dialect: str,
+) -> tuple[SqlCheck | None, list[str]]:
     """Reject unsafe raw syntax before a permissive parser can erase its meaning."""
     words: list[str] = []
     index = 0
@@ -104,12 +112,12 @@ def _lexical_check(sql: str, limits: AnalysisSettings) -> tuple[SqlCheck | None,
             return _result("BLOCK", "SQL_COMMENT", "本阶段不接受 SQL 注释或优化器提示。"), words
         if char == "@" or sql.startswith(":=", index):
             return _result("BLOCK", "SQL_VARIABLE", "不允许变量读取、赋值或会话操作。"), words
-        if char in '\\"' or sql.startswith("||", index) or (
+        if char == "\\" or (char == '"' and dialect == "mysql") or sql.startswith("||", index) or (
             char == "!" and not sql.startswith("!=", index)
         ):
             return _result("UNKNOWN", "SQL_MODE_SYNTAX", "该语法存在未支持的模式差异。"), words
         if sql.startswith("==", index):
-            return _result("UNKNOWN", "UNSUPPORTED_SYNTAX", "仅支持标准 MySQL 比较运算符。"), words
+            return _result("UNKNOWN", "UNSUPPORTED_SYNTAX", "仅支持标准比较运算符。"), words
         if char == "'":
             index += 1
             while index < len(sql):
@@ -125,15 +133,33 @@ def _lexical_check(sql: str, limits: AnalysisSettings) -> tuple[SqlCheck | None,
                     return _result("UNKNOWN", "SQL_CHARACTER", "SQL 包含未支持的控制字符。"), words
                 index += 1
             else:
-                return _result("UNKNOWN", "SQL_PARSE", "SQL 无法按支持的 MySQL 语法解析。"), words
+                return _result("UNKNOWN", "SQL_PARSE", "SQL 无法按支持的方言语法解析。"), words
+            if dialect == "postgres" and sql[index:].lstrip().startswith("'"):
+                return _result("UNKNOWN", "STRING_SYNTAX", "不支持相邻字符串隐式拼接。"), words
             continue
-        if char == "`":
-            end = sql.find("`", index + 1)
-            if end < 0 or _IDENTIFIER.fullmatch(sql[index + 1:end]) is None:
+        if char == "`" and dialect == "postgres":
+            return _result("UNKNOWN", "IDENTIFIER_SYNTAX", "PostgreSQL 不支持反引号标识符。"), words
+        if char == "`" or char == '"' and dialect == "postgres":
+            end = sql.find(char, index + 1)
+            if end < 0 or _IDENTIFIER.fullmatch(sql[index + 1:end]) is None or (
+                dialect == "postgres" and end - index - 1 > 63
+            ):
                 return _result("UNKNOWN", "IDENTIFIER_SYNTAX", "仅支持简单 ASCII 标识符。"), words
             if sql[end + 1:].lstrip().startswith("("):
                 return _result("BLOCK", "FUNCTION_NOT_ALLOWED", "不允许引用或限定的函数名。"), words
             index = end + 1
+            continue
+        if dialect == "postgres" and (char.isascii() and char.isdigit() or (
+            char == "." and index + 1 < len(sql) and sql[index + 1].isascii()
+            and sql[index + 1].isdigit()
+        )):
+            number = _POSTGRES_NUMBER.match(sql, index)
+            end = number.end()
+            if end < len(sql) and (sql[end].isalnum() or sql[end] in "_."):
+                # PostgreSQL accepts numeric underscores; SQLGlot can instead
+                # interpret 1_000 as literal 1 plus alias _000. Do not rewrite it.
+                return _result("UNKNOWN", "NUMBER_SYNTAX", "不支持该数字字面量形式。"), words
+            index = end
             continue
         if char.isascii() and (char.isalpha() or char == "_"):
             end = index + 1
@@ -142,10 +168,15 @@ def _lexical_check(sql: str, limits: AnalysisSettings) -> tuple[SqlCheck | None,
             ):
                 end += 1
             words.append(sql[index:end].upper())
+            if dialect == "postgres" and sql[end:].startswith("'"):
+                return _result("UNKNOWN", "STRING_SYNTAX", "不支持带前缀的字符串。"), words
             if sql[end:].lstrip().startswith("("):
                 if sql[:index].rstrip().endswith("."):
                     return _result("BLOCK", "FUNCTION_NOT_ALLOWED", "不允许限定的函数名。"), words
-                if words[-1] in _AGGREGATE_NAMES and not sql[end:].startswith("("):
+                if (
+                    dialect == "mysql" and words[-1] in _AGGREGATE_NAMES
+                    and not sql[end:].startswith("(")
+                ):
                     return _result("UNKNOWN", "FUNCTION_SYNTAX", "函数名必须紧接左括号。"), words
                 # MySQL builders can turn function calls such as MOD, ISNULL
                 # and LIKE into ordinary operator ASTs, erasing the call name.
@@ -159,6 +190,8 @@ def _lexical_check(sql: str, limits: AnalysisSettings) -> tuple[SqlCheck | None,
                 return _result("UNKNOWN", "AST_LIMIT", "SQL 结构超过静态检查预算。"), words
         elif char == ")":
             depth -= 1
+        elif char == "," and dialect == "postgres":
+            words.append("COMMA")
         elif char not in "0123456789.,+-*/%=<>!":
             return _result("UNKNOWN", "SQL_CHARACTER", "SQL 包含未支持的语法字符。"), words
         index += 1
@@ -177,10 +210,14 @@ def _lexical_check(sql: str, limits: AnalysisSettings) -> tuple[SqlCheck | None,
         return _result("BLOCK", "SELECT_MODIFIER", "不支持锁定读取或 SELECT 执行修饰符。"), words
     if any(word in {"HIGH_PRIORITY", "LOW_PRIORITY", "STRAIGHT_JOIN"} for word in words):
         return _result("BLOCK", "SELECT_MODIFIER", "不支持改变执行行为的查询修饰符。"), words
-    if "NULLS" in words or any(
+    if dialect == "postgres" and "LIMIT" in words and any(
+        token in words[words.index("LIMIT"):] for token in ("COMMA", "ALL", "NULL")
+    ):
+        return _result("UNKNOWN", "LIMIT_SYNTAX", "LIMIT 仅支持非负整数字面量。"), words
+    if ("NULLS" in words and dialect == "mysql") or any(
         word in words and "FUNCTION:" + word not in words for word in {"ISNULL", "NOTNULL"}
     ):
-        return _result("UNKNOWN", "UNSUPPORTED_SYNTAX", "该语法不在支持的 MySQL 子集。"), words
+        return _result("UNKNOWN", "UNSUPPORTED_SYNTAX", "该语法不在支持的 SQL 子集。"), words
     return None, words
 
 
@@ -223,8 +260,16 @@ def check_sql(
     database: str,
     allowed_tables: tuple[str, ...],
     limits: AnalysisSettings,
+    *,
+    dialect: str = "mysql",
 ) -> SqlCheck:
-    """Check a SQL string without I/O; ALLOW permits only guarded EXPLAIN capture."""
+    """Check SQL without I/O; database is the authorized schema for PostgreSQL.
+
+    Dialect and object scope come from the trusted connector, never tool arguments.
+    ALLOW permits only guarded EXPLAIN capture, not query execution.
+    """
+    if dialect not in ("mysql", "postgres"):
+        return _result("UNKNOWN", "UNSUPPORTED_DIALECT", "未支持的数据源 SQL 方言。")
     if not isinstance(sql, str) or not sql.strip():
         return _result("UNKNOWN", "SQL_EMPTY", "SQL 不能为空。")
     try:
@@ -233,23 +278,29 @@ def check_sql(
         return _result("UNKNOWN", "SQL_CHARACTER", "SQL 包含未支持的字符编码。")
     if size > limits.max_sql_bytes:
         return _result("UNKNOWN", "SQL_SIZE", "SQL 长度超过静态检查预算。")
-    failure, words = _lexical_check(sql, limits)
+    failure, words = _lexical_check(sql, limits, dialect)
     if failure is not None:
         return failure
     try:
         # Context zero also prevents SQLGlot's fallback-to-Command warning from
         # logging raw SQL. We never expose parser exceptions to a caller.
         statements = sqlglot.parse(
-            sql, read="mysql", error_level=ErrorLevel.RAISE, error_message_context=0,
+            sql, read=dialect, error_level=ErrorLevel.RAISE, error_message_context=0,
         )
     except Exception:
-        return _result("UNKNOWN", "SQL_PARSE", "SQL 无法按支持的 MySQL 语法解析。")
+        return _result("UNKNOWN", "SQL_PARSE", "SQL 无法按支持的方言语法解析。")
     if len(statements) != 1 or statements[0] is None:
         return _result("BLOCK", "MULTIPLE_STATEMENTS", "仅支持一条 SELECT 语句。")
     root = statements[0]
     nodes = _nodes(root, limits)
     if nodes is None:
         return _result("UNKNOWN", "AST_LIMIT", "SQL 结构超过静态检查预算。")
+    if dialect == "postgres":
+        # SQLGlot preserves token spelling. PostgreSQL resolves unquoted names
+        # in lower case; authorize the server's actual name, not the raw token.
+        for node in nodes:
+            if isinstance(node, exp.Identifier) and not node.args.get("quoted"):
+                node.set("this", node.this.lower())
     if any(isinstance(node, (exp.DML, exp.DDL, exp.Into, exp.Lock)) for node in nodes):
         return _result("BLOCK", "SELECT_SIDE_EFFECT", "禁止写入、文件操作和锁定读取。")
     if not isinstance(root, exp.Select) or any(
@@ -277,13 +328,36 @@ def check_sql(
             return _result("BLOCK", "FUNCTION_NOT_ALLOWED", "仅允许批准的基础聚合函数。")
         if isinstance(node, (exp.Parameter, exp.Placeholder, exp.Var)):
             return _result("BLOCK", "SQL_VARIABLE", "不允许变量、占位参数或会话操作。")
+        if isinstance(node, exp.If) and (
+            not isinstance(node.parent, exp.Case) or node.arg_key != "ifs"
+            or node.this is None or node.args.get("true") is None
+        ):
+            return _result("BLOCK", "FUNCTION_NOT_ALLOWED", "只支持 CASE 中的 WHEN 条件。")
+        if isinstance(node, exp.Case) and not node.args.get("ifs"):
+            return _result("UNKNOWN", "CASE_SYNTAX", "CASE 至少需要一个 WHEN 条件。")
         allowed_args = _ALLOWED_ARGS.get(type(node))
+        if isinstance(node, exp.Div) and dialect == "postgres":
+            allowed_args = allowed_args | {"typed"}
         if allowed_args is None or any(
             key not in allowed_args and _active(value) for key, value in node.args.items()
         ):
             return _result("UNKNOWN", "UNSUPPORTED_SYNTAX", "SQL 包含未支持的节点或语法参数。")
-        if isinstance(node, exp.Identifier) and _IDENTIFIER.fullmatch(node.this) is None:
+        if isinstance(node, exp.Identifier) and (
+            _IDENTIFIER.fullmatch(node.this) is None
+            or dialect == "postgres" and len(node.this) > 63
+        ):
             return _result("UNKNOWN", "IDENTIFIER_SYNTAX", "仅支持简单 ASCII 标识符。")
+        if dialect == "postgres" and isinstance(node, exp.Identifier) and node.args.get("quoted"):
+            start, end = node.meta.get("start"), node.meta.get("end")
+            if (
+                not isinstance(start, int) or not isinstance(end, int)
+                or sql[start:end + 1] != f'"{node.this}"'
+            ):
+                return _result("UNKNOWN", "IDENTIFIER_SYNTAX", "引用标识符必须使用双引号。")
+        if dialect == "postgres" and isinstance(node, exp.Column) and (
+            node.name in _POSTGRES_SYSTEM_COLUMNS
+        ):
+            return _result("BLOCK", "SYSTEM_COLUMN", "不允许读取 PostgreSQL 系统列。")
         if isinstance(node, (exp.Limit, exp.Offset)):
             value = node.expression
             if not isinstance(value, exp.Literal) or value.is_string or not _INTEGER.fullmatch(

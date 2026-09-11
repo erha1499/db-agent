@@ -2,7 +2,7 @@
 
 import json
 import re
-from typing import Annotated, TypeVar
+from typing import Annotated, ClassVar, Literal, TypeVar
 from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, field_validator
@@ -88,6 +88,7 @@ class DatabaseSettings(_ProjectSettings):
     """Independent credentials and limits for the database reader connection."""
 
     model_config = SettingsConfigDict(env_prefix="DB_AGENT_MYSQL_")
+    kind: ClassVar[str] = "mysql"
 
     host: str = Field(default="127.0.0.1", min_length=1)
     port: int = Field(default=13306, ge=1, le=65535)
@@ -143,6 +144,46 @@ class DatabaseSettings(_ProjectSettings):
         for table in value:
             _validate_identifier(table)
         return value
+
+
+class PostgreSQLSettings(DatabaseSettings):
+    """Separate PostgreSQL reader configuration, never inferred from MySQL credentials."""
+
+    model_config = SettingsConfigDict(env_prefix="DB_AGENT_POSTGRES_")
+    kind: ClassVar[str] = "postgresql"
+    port: int = Field(default=15432, ge=1, le=65535)
+    database: str = "db_agent_pg"
+    schema_name: str = Field(default="business", validation_alias="DB_AGENT_POSTGRES_SCHEMA")
+
+    @field_validator("database", "schema_name", "user")
+    @classmethod
+    def validate_pg_name(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", value):
+            raise ValueError("must be a simple PostgreSQL identifier of at most 63 bytes")
+        if value.lower().startswith("pg_") or value.lower() in {
+            "postgres", "root", "template0", "template1", "information_schema",
+        }:
+            raise ValueError("administrative and system names are not supported")
+        return value
+
+    @field_validator("allowed_tables")
+    @classmethod
+    def validate_pg_tables(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for name in value:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", name):
+                raise ValueError("table must be a simple identifier of at most 63 bytes")
+        return value
+
+    @field_validator("host")
+    @classmethod
+    def validate_pg_host(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9.:-]+", value):
+            raise ValueError("a single explicit TCP host is required")
+        return value
+
+
+class _DatabaseSelection(_ProjectSettings):
+    database_kind: Literal["mysql", "postgresql"] = "mysql"
 
 
 class AnalysisSettings(_ProjectSettings):
@@ -201,7 +242,8 @@ def load_settings() -> Settings:
 
 def load_database_settings() -> DatabaseSettings:
     """Load only reader database settings; model configuration is not required."""
-    return _load_settings(DatabaseSettings)
+    kind = _load_settings(_DatabaseSelection).database_kind
+    return _load_settings(PostgreSQLSettings if kind == "postgresql" else DatabaseSettings)
 
 
 def load_analysis_settings() -> AnalysisSettings:

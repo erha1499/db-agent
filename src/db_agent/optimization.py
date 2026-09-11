@@ -64,8 +64,8 @@ def compare_results(original: dict, candidate: dict, *, ordered: bool) -> str:
     return "rows_match" if _rows_key(left, ordered) == _rows_key(right, ordered) else "rows_differ"
 
 
-def _structure(original: str, candidate: str) -> dict:
-    left, right = (sqlglot.parse_one(sql, read="mysql") for sql in (original, candidate))
+def _structure(original: str, candidate: str, dialect="mysql") -> dict:
+    left, right = (sqlglot.parse_one(sql, read=dialect) for sql in (original, candidate))
     orders = [tree.args.get("order") is not None for tree in (left, right)]
     return {
         "ast_identical": left == right,
@@ -110,8 +110,8 @@ class OptimizationService:
                 "列标签、类型和位置均须一致；无 ORDER BY 比较多重集，保留重复行次数。",
                 "有 ORDER BY 比较返回序列；并列键及 LIMIT 的选择可能不确定。"
                 "添加或删除 ORDER BY 时，即使行相同也不确认顺序合同一致。",
-                "NULL 独立于零和文本；数值精确比较，不忽略浮点差异；文本不模拟 MySQL collation。",
-                "快照只覆盖已检查的 InnoDB 非锁定读取。后续提交不可见，重复试验间是不同快照；"
+                "NULL 独立于零和文本；数值精确比较，不忽略浮点差异；文本不模拟数据库 collation。",
+                "快照只覆盖当前数据源已检查的只读表。后续提交不可见，重复试验间是不同快照；"
                 "发现跨次结果变化时结论不确定。未返回服务器 warning。",
                 "EXPLAIN 是估算；select_duration_ms 是客户端派发至 EOF/游标清理，"
                 "包含网络和结果编码，不是服务器纯执行耗时或实测扫描行数。",
@@ -127,7 +127,9 @@ class OptimizationService:
             checks = [self.connector.check_sql(sql, self.analysis_limits)
                       for sql in (request.original, request.candidate)]
             if all(checked.decision == "ALLOW" for checked in checks):
-                report["structure"] = _structure(original, candidate)
+                report["structure"] = _structure(
+                    original, candidate, getattr(self.connector, "dialect", "mysql"),
+                )
                 report["statements"] = {"original": original, "candidate": candidate}
             for iteration in range(repeat):
                 names = (["original", "candidate"] if iteration % 2 == 0 else

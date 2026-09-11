@@ -138,6 +138,8 @@ def schema_digest(schema: dict) -> str:
             key: schema.get(key)
             for key in (
                 "database",
+                "dialect",
+                "schema",
                 "table",
                 "columns",
                 "indexes",

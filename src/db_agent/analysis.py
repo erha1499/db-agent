@@ -36,7 +36,7 @@ class SqlAnalysisService:
         report = {
             "report_id": uuid4().hex,
             "checked_at": datetime.now(UTC).isoformat(),
-            "policy_version": POLICY_VERSION,
+            "policy_version": getattr(self.connector, "policy_version", POLICY_VERSION),
             "database": self.connector.database,
             "decision": check.decision,
             "sql_fingerprint": check.sql_fingerprint,
@@ -60,11 +60,15 @@ class SqlAnalysisService:
                         findings=list(check.findings),
                     )
                     if check.decision == "ALLOW":
-                        assessment = analyze_plan(evidence["plan"], self.limits, check.aliases)
+                        assessment = evidence.get("assessment") or analyze_plan(
+                            evidence["plan"], self.limits, check.aliases,
+                        )
                         report.update(
                             decision=assessment.decision,
                             findings=[*check.findings, *assessment.findings],
-                            evidence_source="mysql_explain_json",
+                            evidence_source=getattr(
+                                self.connector, "evidence_source", "mysql_explain_json",
+                            ),
                             server_version=evidence["server_version"],
                             plan_summary=assessment.summary,
                         )
@@ -103,7 +107,7 @@ class SqlAnalysisService:
                 operation="analyze_sql",
                 report_id=report["report_id"],
                 decision=report["decision"],
-                policy_version=POLICY_VERSION,
+                policy_version=report["policy_version"],
                 sql_fingerprint=report["sql_fingerprint"],
                 rule_ids=[finding["rule_id"] for finding in report["findings"]],
                 duration_ms=report["duration_ms"],

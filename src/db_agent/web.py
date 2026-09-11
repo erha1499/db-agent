@@ -26,9 +26,10 @@ from db_agent.config import (
     load_query_settings,
     load_settings,
 )
+from db_agent.connectors import create_connector
 from db_agent.conversation_context import conversation_prompt
 from db_agent.conversations import ConversationStore, now, source_scope
-from db_agent.db import DatabaseError, MetadataConnector
+from db_agent.db import DatabaseError
 from db_agent.presentation import has_complete_query_results
 from db_agent.records import RunRecord
 from db_agent.result_delivery import (
@@ -104,7 +105,7 @@ class WebRuntime:
         self.settings = None
         try:
             db_settings = load_database_settings()
-            self.connector = MetadataConnector(db_settings)
+            self.connector = create_connector(db_settings)
             self.scope = source_scope(db_settings)
             self.analysis = load_analysis_settings()
             self.query = load_query_settings()

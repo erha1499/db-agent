@@ -15,6 +15,7 @@ dependencies = [
     "langchain-openai>=1.6,<2",
     "langsmith>=0.4,<1",
     "openai>=3.11,<4",
+    "psycopg[binary]>=3.3,<3.4",
     "pydantic-settings>=2.15,<3",
     "pymysql>=1.2.0",
     "sqlglot>=30,<31",
@@ -35,6 +36,7 @@ packages = ["src/db_agent"]
 include = [
     "/src", "/tests", "/scripts", "/evals", "/docs", "/infra", "/.github",
     "/README.md", "/TODO.md", "/AGENTS.md", "/LICENSE", "/compose.yaml",
+    "/compose.postgres.yaml", "/.env.postgres.example",
     "/pyproject.toml", "/uv.lock", "/.python-version", "/.env.example", "/.gitignore",
     "/frontend/src", "/frontend/tests", "/frontend/*.json", "/frontend/*.ts",
     "/frontend/index.html", "/frontend/.prettierrc.json",

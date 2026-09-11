@@ -18,6 +18,8 @@ def now() -> str:
 
 def source_scope(settings) -> str:
     payload = [
+        settings.kind,
+        getattr(settings, "schema_name", None),
         settings.host,
         settings.port,
         settings.database,

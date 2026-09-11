@@ -92,12 +92,15 @@ replacement_sql 必须为 null。若用户只要求诊断、解释或编写 SQL�
 调用 SemanticReview 工具返回审查，issues 最多 6 项，每项 1 至 240 字；
 所有字段都必须返回，不附带协议外字段或自由回答。
 
-修正 SQL 必须保持当前支持的 MySQL 子集：标识符和别名使用英文 ASCII，
+修正 SQL 必须保持当前支持的 SQL 子集：标识符和别名使用英文 ASCII，
 支持单表或显式 INNER/LEFT JOIN ON、基础表达式及 COUNT/SUM/AVG/MIN/MAX 五种聚合；
 不要使用 COALESCE、ROUND 或其他未支持函数，空 SUM 保留 NULL。
-不使用 CASE/IF、CTE、子查询、UNION、窗口函数、DISTINCT（含聚合内 DISTINCT）、
+支持 searched CASE WHEN 条件 THEN 值 [ELSE 值] END，可用于条件聚合；
+省略 ELSE 表示 NULL，COUNT 不计入 NULL；ELSE 0 会使 COUNT 统计该行，须核对业务意图。
+不使用简单 CASE 值 WHEN、IF、CTE、子查询、UNION、窗口函数、DISTINCT（含聚合内 DISTINCT）、
 注释、写入或有副作用的操作。
 不为绕过权限或风险规则改写 SQL；语义修正之后仍必须经过独立的执行预检。
+可信目标方言：MySQL。标识符使用反引号，升序默认 NULL 在前，降序默认 NULL 在后。
 """
 
 
@@ -111,17 +114,28 @@ class SemanticReviewError(Exception):
 def review_messages(
     user_request: str, sql: str, schemas: list[dict], *, conversation_mode: bool = False,
     knowledge: list[dict] | None = None,
+    dialect: str = "mysql",
 ) -> list[BaseMessage]:
     """Build a fresh context from the original task, candidate, and collected schemas only."""
     from db_agent.knowledge import KNOWLEDGE_RULES
 
+    if dialect not in ("mysql", "postgres"):
+        raise SemanticReviewError()
     payload = json.dumps(
         {"user_request": user_request, "candidate_sql": sql, "schemas": schemas,
          **({"confirmed_business_knowledge": knowledge} if knowledge else {})},
         ensure_ascii=False,
         allow_nan=False,
     )
-    return [SystemMessage(content=SEMANTIC_REVIEW_PROMPT + (
+    prompt = SEMANTIC_REVIEW_PROMPT if dialect == "mysql" else SEMANTIC_REVIEW_PROMPT.replace(
+        "可信目标方言：MySQL。标识符使用反引号，升序默认 NULL 在前，降序默认 NULL 在后。\n",
+        "可信目标方言：PostgreSQL。标识符使用双引号；未加引号折小写，加引号大小写精确。\n"
+        "升序默认 NULLS LAST，降序默认 NULLS FIRST；核对用户明确的空值排序要求。\n"
+        "schema 是授权命名空间，database 是实际数据库，不能套用 MySQL 限定名规则。\n"
+        "输出别名仅可单独用于 GROUP BY/ORDER BY，不能用于 HAVING 或其他表达式。\n"
+        "不使用类型转换、系统列或 PostgreSQL 专有的其他未支持语法；方言信息不授予权限。\n",
+    )
+    return [SystemMessage(content=prompt + (
         CONVERSATION_RULES if conversation_mode else ""
     ) + (KNOWLEDGE_RULES if knowledge else "")), HumanMessage(content=payload)]
 

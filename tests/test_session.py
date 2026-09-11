@@ -66,7 +66,7 @@ def setup(monkeypatch, tmp_path):
         })
         return observation(completed())
 
-    monkeypatch.setattr(session_module, "MetadataConnector", OfflineConnector)
+    monkeypatch.setattr(session_module, "create_connector", OfflineConnector)
     monkeypatch.setattr(session_module, "run_agent_observed", offline_agent)
     return model, database, analysis, query, connections, calls
 
@@ -510,7 +510,7 @@ from db_agent.config import AnalysisSettings, DatabaseSettings, QuerySettings, S
 from db_agent.presentation import AgentRunResult, QueryExecution
 
 cleaned = []
-module.MetadataConnector = lambda _: object()
+module.create_connector = lambda _: object()
 async def cancel(*args, **kwargs):
     try:
         asyncio.get_running_loop().call_soon(os.kill, os.getpid(), signal.SIGINT)
