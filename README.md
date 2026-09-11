@@ -4,7 +4,7 @@
 
 首版采用 **Python + LangChain + OpenAI 兼容模型接口**。使用 LangChain 的 `create_agent` 管理模型和工具协议，减少基础运行时开发，把精力放在数据库业务、执行边界和验证上。
 
-> **当前状态：已提供 SQL 预检、普通 EXPLAIN 诊断、受控 SELECT、会话内多轮查询、经确认的跨会话业务知识、本地 Web 对话页面和固定电商业务评测。** CLI 和 Agent 可以读取授权表结构、获取 MySQL 8.4 的真实计划，并在执行入口重新检查后查询业务数据。查询回答根据工具实际报告生成；支持百万订单合成数据的分批导入与独立口径验收。业务知识通过本机 CLI 管理、持久化和显式引用，详见[业务知识说明](docs/knowledge.md)。已提供原/候选 SQL 的同快照结果核对和优化观测，详见[SQL 优化验证](docs/optimization.md)。通用 SQL 等价证明和数据库变更尚未实现。
+> **当前状态：已提供 SQL 预检、普通 EXPLAIN 诊断、受控 SELECT、会话内多轮查询、经确认的跨会话业务知识、需登录的本机多身份 Web 页面和固定电商业务评测。** CLI 和 Agent 可以读取授权表结构、获取 MySQL 8.4 的真实计划，并在执行入口重新检查后查询业务数据。查询回答根据工具实际报告生成；支持百万订单合成数据的分批导入与独立口径验收。业务知识通过本机 CLI 或登录后的 Web 面板分别管理、持久化和显式引用，详见[业务知识说明](docs/knowledge.md)。已提供原/候选 SQL 的同快照结果核对和优化观测，详见[SQL 优化验证](docs/optimization.md)。通用 SQL 等价证明和数据库变更尚未实现。
 
 项目大步骤、完成状态和下一步优先级统一维护在 [TODO 清单](TODO.md)。开始新任务前先核对清单，再按本文查找运行方式与能力限制。
 
@@ -57,12 +57,13 @@ GitHub Actions 的覆盖范围、锁定依赖的构建安装、目标环境验�
 [Web 使用说明](docs/web.md)提供常见 AI 对话界面，包括会话历史、智能查询、SQL 诊断、结果表格、表结构、运行进度和停止。查询完成后可在[分析与交付](docs/result-delivery.md)中选择维度和数值列，生成分组对比、时间趋势，下载带原始 SQL 与范围说明的 HTML 报告或 JSON 快照；分析只处理已保存结果，不再调用模型或数据库。保留 CLI `session` 的完整请求包与严格查询结果校验；Web 历史持久化到本机，仅成功查询的用户原始请求用于后续口径。
 
 ```bash
+uv run python scripts/manage_web_users.py set alice --tables orders --allow-model --model-tables orders
 npm --prefix frontend ci --registry=https://registry.npmjs.org
 npm --prefix frontend run build
 uv run db-agent web
 ```
 
-浏览器打开 <http://127.0.0.1:8000>。这是本机单用户、单进程入口；源码安装需要 Node.js，前端产物不包含在 Python wheel。历史包含问题、SQL 和有限查询结果，保存在忽略的 `outputs/web`，区别于脱敏运行日志；失败或不完整查询后需新建对话并完整重述。
+浏览器打开 <http://127.0.0.1:8000>。先按[本机多身份接入](docs/web-access.md)创建私有身份配置并登录。这是本机多身份、单进程入口，表权限和模型表范围由服务端配置，历史、结果、运行与知识按用户和授权代际隔离；源码安装需要 Node.js，前端产物不包含在 Python wheel。历史包含问题、SQL 和有限查询结果，保存在忽略的 `outputs/web`，区别于脱敏运行日志；失败或不完整查询后需新建对话并完整重述。
 
 ## 业务知识与新会话复用
 

@@ -3,6 +3,21 @@ import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
+const identity = {
+  username: 'analyst',
+  display_name: '合成测试用户',
+  authorization_version: 'v1',
+  allowed_tables: ['orders'],
+  model_tables: ['orders'],
+  model_enabled: true,
+};
+const auth = {
+  authenticated: true,
+  session_id: 'test-session',
+  identity,
+  model_boundary: '合成 HTTP 替身：原文与获准结构发送模型，结果行不发送。',
+};
+
 const stamp = '2026-09-11T10:00:00Z';
 const snapshot = {
   version: 'db-agent-result-v1',
@@ -76,6 +91,7 @@ async function setup(
     empty?: boolean;
     gone?: boolean;
     failExport?: boolean;
+    expiredExport?: boolean;
     mobile?: boolean;
   } = {},
 ) {
@@ -116,9 +132,12 @@ async function setup(
     const request = route.request(),
       path = new URL(request.url()).pathname.slice(4);
     calls.push(`${request.method()} ${path}`);
+    if (path === '/auth/session') return route.fulfill({ json: auth });
     if (path === '/status')
       return route.fulfill({
         json: {
+          identity,
+          model_boundary: auth.model_boundary,
           database: 'db_agent',
           database_configured: true,
           model_configured: true,
@@ -149,6 +168,8 @@ async function setup(
     if (path === resultPath + '/export') {
       const selected = request.postDataJSON();
       exported.push(selected);
+      if (options.expiredExport)
+        return route.fulfill({ status: 401, json: { error: { message: '登录已失效。' } } });
       if (options.failExport)
         return route.fulfill({ status: 503, json: { error: { message: '无法读取本机历史。' } } });
       return route.fulfill({
@@ -233,4 +254,19 @@ test('failed download remains visible without success claim', async ({ page }) =
   await page.getByRole('button', { name: '下载 JSON 快照' }).click();
   await expect(page.getByRole('alert')).toContainText('无法读取本机历史');
   await expect(page.getByText('JSON 快照已下载', { exact: false })).toHaveCount(0);
+});
+
+test('export 401 removes saved result, chart and history instead of downloading cached data', async ({
+  page,
+}) => {
+  await setup(page, { expiredExport: true });
+  await page.getByRole('button', { name: '生成分析', exact: true }).click();
+  await expect(page.locator('.analysis-table')).toBeVisible();
+  const downloads: unknown[] = [];
+  page.on('download', (download) => downloads.push(download));
+  await page.getByRole('button', { name: '下载 JSON 快照' }).click();
+  await expect(page.getByRole('heading', { name: '登录本机工作区' })).toBeVisible();
+  await expect(page.locator('.app-shell, .analysis-table, .result-table')).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText('9007199254740993.01');
+  expect(downloads).toHaveLength(0);
 });

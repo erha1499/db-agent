@@ -77,7 +77,7 @@ export type Run = {
   conversation_id: string;
   request_id: string;
   prompt: string;
-  mode: 'chat' | 'analyze';
+  mode: 'chat' | 'analyze' | 'query';
   created_at: string;
   finished_at: string | null;
   status: 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -98,7 +98,23 @@ export type Conversation = {
   context_turns?: number;
   context_paused?: boolean;
 };
+export type Identity = {
+  authorization_version: string;
+  username: string;
+  display_name: string;
+  allowed_tables: string[];
+  model_tables: string[];
+  model_enabled: boolean;
+};
+export type AuthSession = {
+  session_id?: string;
+  authenticated: boolean;
+  identity?: Identity;
+  model_boundary: string;
+};
 export type AppStatus = {
+  identity: Identity;
+  model_boundary: string;
   database: string | null;
   database_configured: boolean;
   model_configured: boolean;
@@ -117,4 +133,33 @@ export type Schema = {
     referenced_table: string;
     referenced_columns: string[];
   }[];
+};
+
+export type KnowledgeDraft = {
+  kind: 'metric' | 'relationship' | 'sql_template';
+  title: string;
+  definition: string;
+  source: string;
+  source_version: string;
+  invalidation_condition: string;
+  expires_at: string;
+  tables: string[];
+  sql: string | null;
+  relationship: {
+    table: string;
+    columns: string[];
+    referenced_table: string;
+    referenced_columns: string[];
+  } | null;
+};
+export type KnowledgeItem = {
+  id: string;
+  payload: KnowledgeDraft;
+  digest: string;
+  state: 'draft' | 'confirmed' | 'revoked';
+  created_at: string;
+  confirmed_at: string | null;
+  revoked_at: string | null;
+  reason: string | null;
+  schema_hashes: Record<string, string> | null;
 };

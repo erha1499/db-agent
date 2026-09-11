@@ -2,10 +2,12 @@
 
 import asyncio
 import fcntl
+import hashlib
 import json
 import re
 import sqlite3
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -29,7 +31,9 @@ from db_agent.config import (
 from db_agent.conversation_context import conversation_prompt
 from db_agent.conversations import ConversationStore, now, source_scope
 from db_agent.db import DatabaseError, MetadataConnector
+from db_agent.knowledge import KnowledgeDraft, KnowledgeStore
 from db_agent.presentation import has_complete_query_results
+from db_agent.query import QueryService
 from db_agent.records import RunRecord
 from db_agent.result_delivery import (
     SCOPE_NOTE,
@@ -39,13 +43,39 @@ from db_agent.result_delivery import (
     html_report,
     validate_result,
 )
+from db_agent.web_identity import (
+    COOKIE,
+    MODEL_BOUNDARY,
+    SESSION_SECONDS,
+    LoginSession,
+    Sessions,
+    read_identities,
+)
+
+_session: ContextVar[LoginSession | None] = ContextVar("web_session", default=None)
 
 
 class RunInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prompt: str = Field(strict=True, min_length=1, max_length=16384)
     request_id: str = Field(strict=True, pattern=r"^[a-zA-Z0-9_-]{16,64}$")
-    mode: str = Field(default="chat", pattern=r"^(chat|analyze)$")
+    mode: str = Field(default="chat", pattern=r"^(chat|analyze|query)$")
+
+
+class LoginInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str = Field(strict=True, min_length=1, max_length=32)
+    password: str = Field(strict=True, min_length=1, max_length=128)
+
+
+class ConfirmInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    digest: str = Field(strict=True, pattern=r"^[a-f0-9]{64}$")
+
+
+class RevokeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(strict=True, min_length=1, max_length=500)
 
 
 class TitleInput(BaseModel):
@@ -89,13 +119,17 @@ class WebRecord(RunRecord):
 
 
 def _error(code: str, message: str, status: int = 400):
-    return JSONResponse({"error": {"code": code, "message": message}}, status_code=status)
+    return JSONResponse({"error": {"code": code, "message": message}}, status_code=status,
+                        headers={"Cache-Control": "no-store"})
 
 
 class WebRuntime:
-    def __init__(self, path: Path):
-        self.store = ConversationStore(path)
+    def __init__(self, path: Path, *, service=None, identity=None):
+        self.store = service.store if service else ConversationStore(path)
+        self.service = service
+        self.identity = identity
         self.tasks: dict[str, asyncio.Task] = {}
+        self.run_sessions: dict[str, LoginSession] = {}
         self.live: dict[str, dict] = {}
         self.unsaved_conversations: set[str] = set()
         self.connector = None
@@ -103,17 +137,37 @@ class WebRuntime:
         self.model_error = None
         self.settings = None
         try:
-            db_settings = load_database_settings()
-            self.connector = MetadataConnector(db_settings)
+            db_settings = service.db_settings if service else load_database_settings()
+            if identity:
+                db_settings = db_settings.model_copy(update={"allowed_tables":
+                                                            tuple(identity.allowed_tables)})
+            guard = service.authorize if service else None
             self.scope = source_scope(db_settings)
-            self.analysis = load_analysis_settings()
-            self.query = load_query_settings()
+            if service:
+                self.scope = hashlib.sha256(json.dumps([
+                    self.scope, identity.username, service.generation,
+                ]).encode()).hexdigest()
+            self.connector = MetadataConnector(
+                db_settings, authorization_check=guard,
+                knowledge_scope=self.scope if service else None,
+            )
+            self.model_connector = MetadataConnector(
+                db_settings.model_copy(update={"allowed_tables": tuple(identity.model_tables)})
+                if identity else db_settings, authorization_check=guard,
+                knowledge_scope=self.scope if service else None,
+            )
+            self.analysis = service.analysis if service else load_analysis_settings()
+            self.query = service.query if service else load_query_settings()
         except ConfigurationError:
+            if service:
+                raise
             self.connector = None
             self.scope = "unconfigured"
             self.database_error = "请先在项目 .env 中完成数据库配置，再重启 Web 服务。"
         try:
-            self.settings = load_settings()
+            self.settings = service.settings if service else load_settings()
+            if self.settings is None:
+                raise ConfigurationError("model is not configured")
         except ConfigurationError:
             self.model_error = "请先在项目 .env 中完成模型配置，再重启 Web 服务。"
 
@@ -126,12 +180,14 @@ class WebRuntime:
         return value
 
     def run(self, run_id):
+        # The runtime and its live map belong to one trusted principal/generation.
+        # A broken history disk must not prevent that principal cancelling a task.
         if run_id in self.live:
             return self.live[run_id]
         value = self.store.get_run(run_id, self.scope)
         if value is None:
             raise HTTPException(404, "运行记录不存在。")
-        return value
+        return self.live.get(run_id, value)
 
     def result_snapshot(self, conversation_id, run_id, result_id, selection=None):
         # Only persisted evidence under the server's source scope is deliverable.
@@ -190,12 +246,24 @@ class WebRuntime:
             else:
                 self.live.pop(run["id"], None)
         self.tasks.pop(run["id"], None)
+        self.run_sessions.pop(run["id"], None)
 
     async def execute(self, run: dict, previous: list[str]):
         eligible = False
         try:
             with WebRecord(run["events"]) as record:
-                if run["mode"] == "analyze":
+                if self.service:
+                    self.service.authorize()
+                if run["mode"] == "query":
+                    report = await QueryService(
+                        self.connector, self.analysis, self.query, record,
+                    ).execute(run["prompt"])
+                    run["queries"] = [{"sql": run["prompt"], "report": report}]
+                    run["answer"] = (
+                        "已取得 SQL 查询结果，请核对执行状态与结果范围。"
+                        if report["status"] == "ok" else "此次 SQL 查询未取得结果，请查看报告。"
+                    )
+                elif run["mode"] == "analyze":
                     report = await SqlAnalysisService(
                         self.connector,
                         self.analysis,
@@ -212,7 +280,7 @@ class WebRuntime:
                     result = await run_agent_observed(
                         run["prompt"],
                         self.settings,
-                        self.connector,
+                        self.model_connector,
                         record,
                         self.analysis,
                         self.query,
@@ -228,6 +296,8 @@ class WebRuntime:
                         ),
                     )
                     eligible = has_complete_query_results(result)
+                if self.service:
+                    self.service.authorize()
                 run["status"] = "completed"
         except asyncio.CancelledError:
             run.update(
@@ -253,6 +323,8 @@ class WebRuntime:
                         - len(exc.observation.queries),
                     ),
                 )
+        except DatabaseError as exc:
+            run.update(status="failed", error={"code": exc.code, "message": exc.message})
         except Exception:
             run.update(
                 status="failed",
@@ -278,9 +350,125 @@ class WebRuntime:
                 self.live.pop(run["id"], None)
 
 
-def create_app(*, store_path: Path | None = None, static_dir: Path | None = None) -> FastAPI:
+class WebService:
+    """One process, many trusted principals; global run budget remains one."""
+
+    def __init__(self, store_path: Path, identity_path: Path):
+        self.store = ConversationStore(store_path)
+        self.identity_path = identity_path
+        self.sessions = Sessions()
+        self.login_lock = asyncio.Lock()
+        self.knowledge = KnowledgeStore()
+        self.runtimes: dict[str, WebRuntime] = {}
+        self.generation = ""
+        self.fingerprint = ""
+        self.error = None
+        with self.store.connection() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS web_policy_state "
+                       "(id INTEGER PRIMARY KEY CHECK(id=1), fingerprint TEXT, generation TEXT)")
+        self.refresh()
+
+    def refresh(self):
+        try:
+            db_settings = load_database_settings()
+            analysis = load_analysis_settings()
+            query = load_query_settings()
+            identities = read_identities(self.identity_path, db_settings.allowed_tables)
+            try:
+                settings = load_settings()
+                model = settings.model_dump(mode="json", exclude={"api_key"})
+                model["credential_revision"] = hashlib.sha256(
+                    settings.api_key.get_secret_value().encode(),
+                ).hexdigest()
+            except ConfigurationError:
+                model = None
+                settings = None
+            fingerprint = hashlib.sha256(json.dumps([
+                identities.model_dump(mode="json"),
+                db_settings.model_dump(mode="json", exclude={"password"}), model,
+                hashlib.sha256(db_settings.password.get_secret_value().encode()).hexdigest(),
+                analysis.model_dump(mode="json"), query.model_dump(mode="json"),
+            ], sort_keys=True).encode()).hexdigest()
+            error = None
+        except ConfigurationError:
+            fingerprint = "invalid"
+            error = "Web 接入配置无效，请管理员检查身份文件与数据库配置。"
+        if fingerprint != self.fingerprint:
+            # A fresh durable generation on every observed change prevents restoring
+            # an older config from resurrecting history, knowledge, or sessions.
+            self.sessions.values.clear()
+            for runtime in self.runtimes.values():
+                for task in runtime.tasks.values():
+                    task.cancel()
+            with self.store.connection() as db:
+                row = db.execute("SELECT fingerprint,generation FROM web_policy_state "
+                                 "WHERE id=1").fetchone()
+                generation = row["generation"] if row and row["fingerprint"] == fingerprint \
+                    else uuid4().hex
+                db.execute("INSERT OR REPLACE INTO web_policy_state VALUES (1,?,?)",
+                           (fingerprint, generation))
+            self.generation = generation
+            self.fingerprint = fingerprint
+        self.error = error
+        if error:
+            raise ConfigurationError(error)
+        self.db_settings = db_settings
+        self.settings = settings
+        self.analysis = analysis
+        self.query = query
+        self.identities = identities
+
+    def authorize(self):
+        try:
+            self.refresh()
+        except (ConfigurationError, OSError, sqlite3.Error):
+            raise DatabaseError("PERMISSION_DENIED", "身份配置失效，操作已停止。") from None
+        if not self.sessions.valid(_session.get(), self.generation):
+            raise DatabaseError("PERMISSION_DENIED", "登录或授权已失效，请重新登录。")
+
+    def identity(self, session):
+        return next(user for user in self.identities.users if user.username == session.username)
+
+    def runtime(self, session):
+        self.authorize()
+        if session != _session.get():
+            raise DatabaseError("PERMISSION_DENIED", "登录状态不一致。")
+        key = f"{self.generation}:{session.username}"
+        if key not in self.runtimes:
+            self.runtimes[key] = WebRuntime(
+                self.store.path, service=self, identity=self.identity(session),
+            )
+        return self.runtimes[key]
+
+    def busy(self):
+        return any(runtime.tasks for runtime in self.runtimes.values())
+
+    async def watch(self):
+        while True:
+            await asyncio.sleep(0.2)
+            try:
+                self.refresh()
+                valid = True
+            except (ConfigurationError, OSError, sqlite3.Error):
+                valid = False
+                self.sessions.values.clear()
+            for key, runtime in list(self.runtimes.items()):
+                for run_id, task in list(runtime.tasks.items()):
+                    if not valid or not self.sessions.valid(
+                        runtime.run_sessions.get(run_id), self.generation,
+                    ):
+                        task.cancel()
+                if not runtime.tasks and not key.startswith(self.generation + ":"):
+                    self.runtimes.pop(key, None)
+
+
+def create_app(
+    *, store_path: Path | None = None, static_dir: Path | None = None,
+    identity_path: Path | None = None,
+) -> FastAPI:
     store_path = store_path or Path("outputs/web/conversations.sqlite3")
     static_dir = static_dir or Path(__file__).resolve().parents[2] / "frontend/dist"
+    identity_path = identity_path or Path("outputs/web/identities.json")
 
     @asynccontextmanager
     async def lifespan(app):
@@ -291,12 +479,15 @@ def create_app(*, store_path: Path | None = None, static_dir: Path | None = None
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 raise RuntimeError("该 Web 历史已由另一个进程使用，请停止旧服务。") from None
-            runtime = WebRuntime(store_path)
-            app.state.runtime = runtime
+            service = WebService(store_path, identity_path)
+            app.state.service = service
+            watcher = asyncio.create_task(service.watch())
             try:
                 yield
             finally:
-                tasks = list(runtime.tasks.values())
+                tasks = [task for runtime in service.runtimes.values()
+                         for task in runtime.tasks.values()]
+                tasks.append(watcher)
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
@@ -305,6 +496,10 @@ def create_app(*, store_path: Path | None = None, static_dir: Path | None = None
 
     @app.middleware("http")
     async def local_boundary(request: Request, call_next):
+        session = None
+        protected = request.url.path.startswith("/api") and request.url.path not in {
+            "/api/auth/session", "/api/auth/login", "/api/auth/logout",
+        }
         try:
             hostname = urlsplit("http://" + request.headers.get("host", "")).hostname
         except ValueError:
@@ -330,7 +525,25 @@ def create_app(*, store_path: Path | None = None, static_dir: Path | None = None
                 if len(body) > 100000:
                     return _error("REQUEST_TOO_LARGE", "请求内容过长。", 413)
             request._body = bytes(body)
-        response = await call_next(request)
+            service = request.app.state.service
+            try:
+                service.refresh()
+            except (ConfigurationError, OSError, sqlite3.Error):
+                return _error("ACCESS_CONFIGURATION", "Web 接入配置不可用，请联系本机管理员。", 503)
+            session = service.sessions.get(request.cookies.get(COOKIE), service.generation)
+            if protected and (session is None or
+                              request.headers.get("x-db-agent-session") != session.key):
+                return _error("AUTH_REQUIRED", "登录已失效，请重新登录。", 401)
+        context = _session.set(session)
+        try:
+            response = await call_next(request)
+            if protected:
+                try:
+                    service.authorize()
+                except DatabaseError:
+                    return _error("AUTH_REQUIRED", "登录或授权已变更，请重新登录。", 401)
+        finally:
+            _session.reset(context)
         response.headers.update(
             {
                 "Cache-Control": "no-store",
@@ -365,7 +578,56 @@ def create_app(*, store_path: Path | None = None, static_dir: Path | None = None
         return _error("INPUT_LIMIT", str(exc), 422)
 
     def runtime(request):
-        return request.app.state.runtime
+        return request.app.state.service.runtime(_session.get())
+
+    def session_response(service, session):
+        if not service.sessions.valid(session, service.generation):
+            return {"authenticated": False, "model_boundary": MODEL_BOUNDARY}
+        return {
+            "authenticated": True, "session_id": session.key,
+            "identity": {**service.identity(session).public(),
+                         "authorization_version": service.generation},
+            "model_boundary": MODEL_BOUNDARY,
+        }
+
+    @app.get("/api/auth/session")
+    async def auth_session(request: Request):
+        return session_response(request.app.state.service, _session.get())
+
+    @app.post("/api/auth/login")
+    async def login(payload: LoginInput, request: Request):
+        service = request.app.state.service
+        generation = service.generation
+        async with service.login_lock:
+            token, code = await asyncio.to_thread(
+                service.sessions.login, payload.username, payload.password,
+                service.identities.users, generation,
+            )
+        service.refresh()
+        if generation != service.generation:
+            return _error("AUTH_REQUIRED", "授权配置已变更，请重新登录。", 401)
+        if code:
+            return _error(code, "登录请求过多，请一分钟后重试。" if code == "LOGIN_RATE_LIMIT"
+                          else "用户名或密码不正确，或账号已停用。",
+                          429 if code == "LOGIN_RATE_LIMIT" else 401)
+        old = _session.get()
+        if old:
+            service.sessions.values.pop(old.key, None)
+        session = service.sessions.get(token, generation)
+        response = JSONResponse(session_response(service, session))
+        response.set_cookie(COOKIE, token, max_age=SESSION_SECONDS, path="/api",
+                            httponly=True, samesite="strict")
+        return response
+
+    @app.post("/api/auth/logout")
+    async def logout(request: Request):
+        service = request.app.state.service
+        session = _session.get()
+        if session:
+            service.sessions.values.pop(session.key, None)
+        response = JSONResponse(session_response(service, None))
+        response.delete_cookie(COOKIE, path="/api", httponly=True, samesite="strict")
+        return response
 
     @app.get("/api/status")
     async def status(request: Request):
@@ -378,6 +640,9 @@ def create_app(*, store_path: Path | None = None, static_dir: Path | None = None
             "model_error": state.model_error,
             "read_only": True,
             "active_run_id": next(iter(state.tasks), None),
+            "identity": {**state.identity.public(),
+                         "authorization_version": _session.get().generation},
+            "model_boundary": MODEL_BOUNDARY,
         }
 
     @app.get("/api/conversations")
@@ -436,10 +701,12 @@ def create_app(*, store_path: Path | None = None, static_dir: Path | None = None
             if previous["prompt"] != payload.prompt or previous["mode"] != payload.mode:
                 raise HTTPException(409, "同一请求标识不能用于不同内容。")
             return state.run(previous["id"])
-        if state.tasks:
+        if request.app.state.service.busy():
             raise HTTPException(409, "已有任务正在运行，请等待完成或先停止它。")
         if not state.connector:
             raise HTTPException(503, state.database_error)
+        if payload.mode == "chat" and not state.identity.model_enabled:
+            raise HTTPException(403, "当前身份未允许使用模型，请选择 SQL 查询或诊断。")
         if payload.mode == "chat" and state.settings is None:
             raise HTTPException(503, state.model_error)
         if not payload.prompt.strip() or len(payload.prompt.encode()) > 16384:
@@ -466,6 +733,7 @@ def create_app(*, store_path: Path | None = None, static_dir: Path | None = None
         state.store.add_run(run)
         state.live[run["id"]] = run
         state.tasks[run["id"]] = asyncio.create_task(state.execute(run, previous_requests))
+        state.run_sessions[run["id"]] = _session.get()
         state.tasks[run["id"]].add_done_callback(lambda task: state.task_done(run, task))
         return run
 
@@ -538,6 +806,50 @@ def create_app(*, store_path: Path | None = None, static_dir: Path | None = None
         if not state.connector:
             raise HTTPException(503, state.database_error)
         return await state.connector.describe_table(table)
+
+    def public_knowledge(item):
+        return {key: value for key, value in item.items() if key != "scope"}
+
+    @app.get("/api/knowledge")
+    async def list_knowledge(request: Request):
+        state = runtime(request)
+        return {"knowledge": [public_knowledge(item) for item in
+                              state.service.knowledge.list(state.connector.knowledge_scope)]}
+
+    @app.post("/api/knowledge", status_code=201)
+    async def create_knowledge(payload: KnowledgeDraft, request: Request):
+        state = runtime(request)
+        return public_knowledge(state.service.knowledge.create(
+            payload.model_dump_json().encode(), state.connector, state.analysis,
+        ))
+
+    @app.get("/api/knowledge/{identifier}")
+    async def get_knowledge(identifier: str, request: Request):
+        state = runtime(request)
+        return public_knowledge(state.service.knowledge.get(
+            identifier, state.connector.knowledge_scope,
+        ))
+
+    @app.post("/api/knowledge/{identifier}/confirm")
+    async def confirm_knowledge(identifier: str, payload: ConfirmInput, request: Request):
+        state = runtime(request)
+        item = state.service.knowledge.get(identifier, state.connector.knowledge_scope)
+        # Fingerprint the same authorized metadata view that the model will use.
+        # Narrower model tables can omit foreign keys to direct-query-only tables.
+        connector = state.model_connector if (
+            state.identity.model_enabled
+            and set(item["payload"]["tables"]) <= set(state.identity.model_tables)
+        ) else state.connector
+        return public_knowledge(await state.service.knowledge.confirm(
+            identifier, payload.digest, connector, state.analysis,
+        ))
+
+    @app.post("/api/knowledge/{identifier}/revoke")
+    async def revoke_knowledge(identifier: str, payload: RevokeInput, request: Request):
+        state = runtime(request)
+        return public_knowledge(state.service.knowledge.revoke(
+            identifier, state.connector.knowledge_scope, payload.reason,
+        ))
 
     if (static_dir / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=static_dir / "assets"), name="assets")
