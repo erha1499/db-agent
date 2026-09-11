@@ -5,6 +5,7 @@ import json
 import math
 import re
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 import aiomysql
@@ -42,9 +43,16 @@ class DatabaseError(RuntimeError):
 class MetadataConnector:
     """每个实例顺序处理受控数据库请求，总超时预算包括排队。"""
 
-    def __init__(self, settings: DatabaseSettings):
+    def __init__(
+        self, settings: DatabaseSettings, *, authorization_check: Callable[[], None] | None = None,
+    ):
         self._settings = settings.model_copy(deep=True)
         self._lock = asyncio.Lock()
+        self._authorization_check = authorization_check
+
+    def _authorize(self):
+        if self._authorization_check:
+            self._authorization_check()
 
     @property
     def database(self) -> str:
@@ -57,6 +65,7 @@ class MetadataConnector:
 
     def check_sql(self, sql: str, limits: AnalysisSettings) -> SqlCheck:
         """Check the current trusted scope without accessing the database."""
+        self._authorize()
         return check_sql(sql, self.database, self._settings.allowed_tables, limits)
 
     async def explain_checked(self, sql: str, limits: AnalysisSettings) -> dict:
@@ -125,12 +134,14 @@ class MetadataConnector:
                 # aiomysql refreshes server_status on this OK packet, not SELECT EOF.
                 self._require_readonly_transaction(connection)
                 cursor = await connection.cursor(aiomysql.SSCursor)
+                self._authorize()
                 phase = "execution"
                 async with asyncio.timeout(query_limits.execution_timeout_seconds):
                     outcome["execution_status"] = "unknown"
                     # None preserves literal % characters; the SQL is never rewritten.
                     await cursor.execute(sql, None)
                     result = await read_query_result(cursor, query_limits)
+                    self._authorize()
                     if result["server_statement_status"] == "completed":
                         await cursor.close()
                     outcome.update(
@@ -473,6 +484,7 @@ class MetadataConnector:
         try:
             async with asyncio.timeout(budget):
                 async with self._lock:
+                    self._authorize()
                     connection = None
                     try:
                         connection = await aiomysql.connect(
@@ -526,6 +538,7 @@ class MetadataConnector:
 
     async def _fetch(self, connection, query: str, params: tuple, all_rows: list) -> list:
         cursor = await connection.cursor()
+        self._authorize()
         await cursor.execute(query, params)
         rows = []
         while (row := await cursor.fetchone()) is not None:
@@ -535,6 +548,7 @@ class MetadataConnector:
             self._bounded_result(all_rows)
             rows.append(row)
         await cursor.close()
+        self._authorize()
         return rows
 
     def _bounded_result(self, result):
