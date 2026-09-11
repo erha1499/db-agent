@@ -9,6 +9,7 @@
 | Job | 实际验证 | 不代表什么 |
 | --- | --- | --- |
 | Offline / Python 3.11、3.13 | 锁文件一致性、Ruff、全部默认 pytest、未意外改动跟踪文件 | HTTP 和数据库替身不代表真实提供方或 MySQL |
+| Frontend / Chromium contract | Node 26.7.0、npm 11.19.0，`npm ci`、格式检查、TypeScript/Vite 构建和 Playwright Chromium 合同测试 | 合成 HTTP 替身不代表真实模型/数据库业务链路 |
 | MySQL 8.4 / real integration | 在该 runner 新建 Compose 服务，初始化三张公开合成表；以 reader 验证元数据、权限、EXPLAIN、结果与清理，另以固定本地管理员 socket 验证随机表事务和元数据锁 | 不是百万规模评测、生产部署或任意数据源验收 |
 | Locked build and installed CLI | 从锁文件安装构建依赖，构建 sdist 和 wheel；核对没有本地配置或运行资产；在新虚拟环境按哈希安装 runtime 依赖与 wheel，运行两个 CLI 入口 | 不发布 PyPI，不保证不同操作系统下产物逐字节相同 |
 
@@ -45,6 +46,8 @@ work/package-venv/bin/db-agent --help
 ```
 
 完成后可用 `uv sync --locked` 恢复开发环境。`dist/`、`work/`、`outputs/` 都不提交；构建步骤不执行上传。sdist 使用明确清单，CI 还放入合成的 `.env` 和 `outputs` 文件再检查产物，防止打包边界退化。安装/运行记录应保留 commit SHA、uv/Python 版本、锁文件 SHA256 和命令结果；锁定依赖版本不等于锁定主机内核或远端服务行为。
+
+源码包包含 `frontend` 源码、配置与 `package-lock.json`，排除 `node_modules`、前端 `dist`、Playwright 运行产物；CI 放入这些目录的合成文件后核对清单。Python wheel 只安装 Python 入口，不携带已构建页面。从源码启动 Web 时另用 Node 26.7.0/npm 11.19.0 执行 `npm --prefix frontend ci` 与 `npm --prefix frontend run build`，再按 [Web 说明](web.md)启动。前端回归入口为 `npm --prefix frontend run format:check`、`npm --prefix frontend run test:e2e`；首次运行需在 frontend 目录执行 `npx --no-install playwright install --with-deps chromium`。浏览器测试本身不需要模型或数据库。
 
 ## 在明确目标上逐层验收
 

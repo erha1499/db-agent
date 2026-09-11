@@ -20,12 +20,18 @@ def check() -> None:
                 if any(item.issym() or item.islnk() or item.isdev() for item in entries):
                     raise ValueError("distribution contains a link or special file")
                 names = [item.name for item in entries]
+            required = ("frontend/package-lock.json", "frontend/src/App.tsx")
+            if not all(any(name.endswith("/" + path) for name in names) for path in required):
+                raise ValueError("source distribution is missing frontend source or lockfile")
         for name in names:
             path = PurePosixPath(name)
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError("distribution contains an unsafe path")
             if any(
-                part in {"work", "outputs", "artifacts", ".venv", "__pycache__", ".git"}
+                part in {
+                    "work", "outputs", "artifacts", ".venv", "__pycache__", ".git",
+                    "node_modules", "dist", "test-results", "playwright-report",
+                }
                 or (part.startswith(".env") and part != ".env.example")
                 or part.endswith((".pem", ".key", ".pyc"))
                 for part in path.parts

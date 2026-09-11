@@ -36,6 +36,8 @@ include = [
     "/src", "/tests", "/scripts", "/evals", "/docs", "/infra", "/.github",
     "/README.md", "/TODO.md", "/AGENTS.md", "/LICENSE", "/compose.yaml",
     "/pyproject.toml", "/uv.lock", "/.python-version", "/.env.example", "/.gitignore",
+    "/frontend/src", "/frontend/tests", "/frontend/*.json", "/frontend/*.ts",
+    "/frontend/index.html", "/frontend/.prettierrc.json",
 ]
 exclude = ["__pycache__", "*.pyc"]
 
