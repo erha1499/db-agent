@@ -17,7 +17,7 @@
 ```bash
 git clone https://github.com/erha1499/db-agent.git
 cd db-agent
-uv sync
+uv sync --locked
 
 cp .env.example .env
 # 编辑本地 .env，填写三个模型必填配置后运行
@@ -49,6 +49,8 @@ git diff --check
 ```
 
 离线测试验证配置、静态规则、构造计划、连接器边界、结果处理与 Agent 协议；真实模型连通性单独通过 `check` 验证，数据库连接使用 `db check` 验证。实际诊断与查询链路使用下方 `db analyze` / `db query` / `chat`，不同层次的验证不能互相替代。
+
+GitHub Actions 的覆盖范围、锁定依赖的构建安装、目标环境验收和显式提供方核验见[持续集成与可复现交付](docs/delivery.md)。CI 状态以当前 PR HEAD 对应的远端运行结果为准；默认不运行真实模型评测。
 
 ## 本地 MySQL
 
