@@ -489,3 +489,41 @@ def test_postgres_numeric_comparison_preserves_more_than_mysql_chart_precision(p
     report = asyncio.run(service.compare(query, query))
     assert report["outcome"] == "observed_equal", report
     assert report["trials"][0]["original"]["result"]["rows"] == [[value]]
+
+
+def test_web_real_postgres_never_inherits_explicit_mysql_change_grant(identity_web, monkeypatch):
+    from db_agent.changes import ChangeTarget
+    from db_agent.changes_db import ChangeConnector
+
+    app, client, path, identities, _, _ = identity_web
+    # The independent MySQL target is configured at the application boundary; this
+    # test must reject it before ANY MySQL dispatch, even with explicit user grants.
+    target = ChangeTarget(password="synthetic-never-dispatched", server_uuid="a" * 36,
+                          schema_digest="b" * 64)
+    monkeypatch.setattr(web, "load_change_target", lambda: target)
+    identities["users"][0].update(change_targets=["local_inventory"], change_approve=True)
+    save(path, identities)
+    calls = []
+    def forbidden(self, *args, **kwargs):
+        calls.append(True)
+        raise AssertionError("PostgreSQL Web must not construct a MySQL writer")
+    monkeypatch.setattr(ChangeConnector, "__init__", forbidden)
+    client.get("/api/auth/session")
+    login(client)
+    saved_real_query(client)  # Actual PostgreSQL query + independent 130.00 fixture oracle.
+    assert client.get("/api/changes").json() == {
+        "targets": [], "changes": [], "can_approve": False,
+    }
+    identifier = "a" * 32
+    for endpoint, payload in [
+        ("preview", {"target": "local_inventory", "item_id": 1, "quantity": 0,
+                     "request_id": "x" * 32}),
+        (identifier + "/approve", {"digest": "b" * 64}),
+        (identifier + "/execute", {}), (identifier + "/reconcile", {}),
+        (identifier + "/recover", {"request_id": "r" * 32}),
+    ]:
+        response = client.post("/api/changes/" + endpoint, json=payload)
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "CHANGE_PERMISSION_DENIED"
+    assert client.get("/api/changes/" + identifier).status_code == 400
+    assert not calls and not app.state.service.changes.pending

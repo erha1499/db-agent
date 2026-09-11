@@ -19,6 +19,8 @@ def main():
     parser.add_argument("--tables", nargs="*", default=[])
     parser.add_argument("--model-tables", nargs="*", default=[])
     parser.add_argument("--allow-model", action="store_true")
+    parser.add_argument("--change-targets", nargs="*", choices=["local_inventory"], default=[])
+    parser.add_argument("--allow-change-approval", action="store_true")
     args = parser.parse_args()
     try:
         database = load_database_settings()
@@ -46,6 +48,7 @@ def main():
                 username=args.username, display_name=args.display_name or args.username,
                 password_hash=password_hash(password), allowed_tables=args.tables,
                 model_enabled=args.allow_model, model_tables=args.model_tables,
+                change_targets=args.change_targets, change_approve=args.allow_change_approval,
             )
         users = [user for user in users if user.username != args.username] + [replacement]
         payload = IdentityFile(version=1, users=users).model_dump_json(indent=2)
