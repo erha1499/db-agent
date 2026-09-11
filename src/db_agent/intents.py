@@ -17,6 +17,7 @@ from sqlglot import exp
 from sqlglot.errors import ErrorLevel
 
 from db_agent.config import AnalysisSettings
+from db_agent.conversation_context import CONVERSATION_RULES
 from db_agent.policy import check_sql
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
@@ -122,7 +123,9 @@ class IntentError(Exception):
         super().__init__("查询需求合同无效或无法完整确认，未取得可执行候选。")
 
 
-def intent_messages(user_request: str, schemas: list[dict]) -> list[BaseMessage]:
+def intent_messages(
+    user_request: str, schemas: list[dict], *, conversation_mode: bool = False,
+) -> list[BaseMessage]:
     """Create fresh messages without a candidate or a previous model's explanation."""
     try:
         payload = json.dumps(
@@ -131,7 +134,9 @@ def intent_messages(user_request: str, schemas: list[dict]) -> list[BaseMessage]
         )
     except (TypeError, ValueError):
         raise IntentError() from None
-    return [SystemMessage(content=INTENT_PROMPT), HumanMessage(content=payload)]
+    return [SystemMessage(content=INTENT_PROMPT + (
+        CONVERSATION_RULES if conversation_mode else ""
+    )), HumanMessage(content=payload)]
 
 
 def parse_intent(response: dict) -> QueryIntent:

@@ -16,8 +16,77 @@ from db_agent.config import (
     load_settings,
 )
 from db_agent.db import DatabaseError, MetadataConnector
+from db_agent.presentation import AgentRunResult, render_queries
 from db_agent.query import QueryService
 from db_agent.records import RunRecord
+from db_agent.session import ConversationError, ConversationSession
+
+_SESSION_RESET = "请使用 /reset 清空上下文后完整重述请求。"
+_SESSION_HELP = (
+    "每行输入一个查询；仅保留完整成功查询的用户请求，不保留查询结果。\n"
+    "/reset：清空会话上下文；/exit：退出；/help：显示帮助。\n"
+    "失败、截断、取消、输出失败或没有完成查询后，需要 /reset 后完整重述请求。"
+)
+
+
+def run_session_command(settings, database, analysis_settings, query_settings) -> int:
+    session = ConversationSession(settings, database, analysis_settings, query_settings)
+    print(_SESSION_HELP)
+    try:
+        with asyncio.Runner() as runner:
+            while True:
+                try:
+                    prompt = input("db-agent> ")
+                except EOFError:
+                    return 0
+                except KeyboardInterrupt:
+                    print("已退出会话。", file=sys.stderr)
+                    return 130
+                command = prompt.strip()
+                if not command:
+                    continue
+                if command == "/exit":
+                    return 0
+                if command == "/reset":
+                    session.reset()
+                    print("会话上下文已清空，请完整描述新的查询。")
+                    continue
+                if command == "/help":
+                    print(_SESSION_HELP)
+                    continue
+                if command.startswith("/"):
+                    print("未知会话命令，请使用 /help 查看帮助。", file=sys.stderr)
+                    continue
+                try:
+                    with RunRecord() as record:
+                        print(runner.run(session.submit(prompt, record)).answer)
+                    if session.needs_reset:
+                        print("本轮未取得完整成功的查询结果。" + _SESSION_RESET, file=sys.stderr)
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    # Runner waits for task cancellation and the original cleanup.
+                    # Closing connections does not prove server-side cancellation.
+                    session.require_reset()
+                    print("本轮已中断并结束清理，数据库执行状态以已有报告为准。"
+                          + _SESSION_RESET, file=sys.stderr)
+                except ConversationError as exc:
+                    print(str(exc), file=sys.stderr)
+                except ValueError:
+                    session.require_reset()
+                    print("本轮输入、上下文或输出处理失败。" + _SESSION_RESET, file=sys.stderr)
+                except Exception as exc:
+                    session.require_reset()
+                    if isinstance(exc, AgentResponseError) and isinstance(
+                        exc.observation, AgentRunResult,
+                    ) and exc.observation.queries:
+                        observed = exc.observation
+                        missing = max(
+                            0, observed.tool_calls.count("execute_query") - len(observed.queries),
+                        )
+                        print(render_queries(observed.queries, missing_reports=missing))
+                        del observed
+                    print("本轮处理失败，未完整交付结果。" + _SESSION_RESET, file=sys.stderr)
+    finally:
+        session.reset()
 
 
 async def run_database_command(args, connector: MetadataConnector, record: RunRecord) -> dict:
@@ -62,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("check", help="调用一次模型，检查连通性")
     chat = commands.add_parser("chat", help="进行一次带元数据、诊断和只读查询工具的独立问答")
     chat.add_argument("prompt", help="问题或需要解释的 SQL")
+    commands.add_parser("session", help="进行仅保留成功用户请求的会话内多轮查询")
     db = commands.add_parser("db", help="直接检查数据库、预检或受控查询，不调用模型")
     db_commands = db.add_subparsers(dest="db_command", required=True)
     db_commands.add_parser("check", help="检查只读数据库连接")
@@ -106,6 +176,10 @@ def main(argv: list[str] | None = None) -> int:
             for name in ("OPENAI_BASE_URL", "API_KEY", "MODEL"):
                 print(f"DB_AGENT_{name}: 已配置并通过校验（值已隐藏）")
             return 0
+        if args.command == "session":
+            return run_session_command(
+                settings, load_database_settings(), load_analysis_settings(), load_query_settings(),
+            )
         prompt = (
             "这是模型连通性检查，请仅回复 DB_AGENT_OK。" if args.command == "check" else args.prompt
         )
