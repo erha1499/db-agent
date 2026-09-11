@@ -7,7 +7,7 @@
 - 先读 `README.md` 和 [TODO.md](TODO.md)，核对 Git 状态和实际文件。TODO 维护大步骤、完成状态和下一步优先级，列入清单不代表功能已经存在或已授权实施。
 - 面向实际数据库工作流程，主要业务是数据库查询、SQL 风险预检与诊断，后续逐步扩展 Data Agent、业务记忆和受控变更。
 - 近期目标：Python、LangChain、单个 OpenAI 兼容模型和明确授权的 MySQL/PostgreSQL 数据源，分阶段完成可实际使用的 SQL 预检、诊断与受控查询闭环；先在隔离测试环境验证。
-- 当前已接入 MySQL/PostgreSQL 元数据、SQLGlot 静态预检、普通 EXPLAIN JSON、结构化诊断与受控 SELECT；Agent 提供 `list_tables` / `describe_table` / `analyze_sql` / `execute_query`，并有直接 CLI、`session` 会话内多轮查询、本机 Web 页面、最小运行记录、pytest、Ruff、百万订单电商合成数据和固定业务评测。查询回答由可信报告确定性生成。已支持经确认的本机跨会话业务知识，已提供同快照 SQL 优化核对；通用 SQL 等价证明和变更仍待实现。开发使用 Python 3.13 和 `uv sync`，依赖版本以 `uv.lock` 为准。
+- 当前已接入 MySQL/PostgreSQL 元数据、SQLGlot 静态预检、普通 EXPLAIN JSON、结构化诊断与受控 SELECT；Agent 提供 `list_tables` / `describe_table` / `analyze_sql` / `execute_query`，并有直接 CLI、`session` 会话内多轮查询、本机 Web 页面、最小运行记录、pytest、Ruff、百万订单电商合成数据和固定业务评测。查询回答由可信报告确定性生成。已支持经确认的本机跨会话业务知识，已提供同快照 SQL 优化核对；已提供限定单行库存变更的独立Web审批/执行/恢复；通用 SQL 等价证明、任意 DDL/DELETE 与生产变更仍待实现。开发使用 Python 3.13 和 `uv sync`，依赖版本以 `uv.lock` 为准。
 - 使用 `langchain.agents.create_agent` 与 `langchain_openai.ChatOpenAI`，复用框架的模型与工具协议，不自写 harness 或自定义 Graph。LangGraph 是框架内部依赖；近期不扩展多 Agent、分布式编排、完整观测平台或通用记忆系统。
 - 每个阶段优先完成一条受控业务闭环和验收证据，再扩大功能范围。按目标环境核对版本、权限、运行限制与业务结果，不能用假工具、预制回答或伪造测试结果冒充可运行功能。
 
@@ -87,6 +87,14 @@
 - 用户、数据源和持久化授权代际同时隔离历史、运行/取消、结果/导出与knowledge_scope；配置变化撤销旧登录并停止在途任务，恢复旧配置不复活旧范围。旧匿名历史/CLI知识不自动分配给登录用户；旧数据保留本机但不再通过新代际访问。
 - Web知识确认使用其实际模型可见的结构范围（适合model_tables时）；更宽直接表范围不得以额外外键指纹使合法模型知识恒失效，也不能通过忽略结构变化绕过校验。权限外或未确认知识不能进入模型。
 - 多身份验收入口 `uv run python scripts/evaluate_web_identities.py --run`，真实模型和浏览器用显式 `--model --browser`。只能固定现有本地reader和公开fixture，不扩大白名单/账号权限或写入数据库来通过。结果在忽略的 `outputs/web-identity`，与替身合同及CI分开判断。
+
+## 独立受控变更
+
+- `changes.py` / `changes_db.py` 只支持固定 `127.0.0.1:13316/db_agent_changes.inventory.quantity` 的单行替换，不接受SQL/目标/权限自报；不注册模型工具，不放宽原只读政策。Web查询源必须为MySQL，其他源不继承写入口。
+- `outputs/changes/target.json` 私有配置绑定server UUID、writer、两表与元数据检查定义；身份change_targets与change_approve、授权代际、完整前后值/版本、期限和digest在实际入口及数据库派发/提交前重新核对。审批、claim或必要取证失败停止。
+- 单进程/单账本内先持久claim再锁行；同一InnoDB事务UPDATE和唯一回执INSERT，COMMIT后异常保留unknown，不重复派发。核对必须等待原本地任务退出，再取得实际行锁屏障并读新鲜回执；已证实提交不能被后续取证失败降为未提交。恢复是新预览/新审批，执行前再查原提交依据和当前前值，不覆盖漂移。
+- `infra/changes/compose.yaml` 独立项目db-agent-changes、独立卷和最小writer/reader，原reader与13306数据不改。锁定inspector只用于固定无参数触发器取证，完整函数/视图定义也要绑定；不能把权限下不可见的触发器空列表当作不存在。SHOW_ROUTINE只用于此独立实例的完整函数定义检查，不推广到共享实例。
+- 验收：`DB_AGENT_CHANGES_INTEGRATION=1 uv run pytest tests/test_mysql_changes.py -q` 仅作用于明确新合成目标；`scripts/evaluate_changes.py --run` 使用真实浏览器、服务端身份、独立reader查询配置和writer变更连接器，并独立读回行/回执，不调用模型。既有卷/配置不能被bootstrap覆盖或删掉；停止服务保留回执。权限撤销后的旧unknown需管理员按精确记录人工核对，不复活旧scope。完整规则与限制见[受控变更](docs/changes.md)。
 
 ## SQL 执行要求
 

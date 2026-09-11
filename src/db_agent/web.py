@@ -21,6 +21,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from db_agent.agent import AgentResponseError, run_agent_observed
 from db_agent.analysis import SqlAnalysisService
+from db_agent.changes import (
+    ApprovalInput,
+    ChangeInput,
+    ChangeService,
+    EmptyInput,
+    RecoveryInput,
+    load_change_target,
+)
 from db_agent.config import (
     ConfigurationError,
     load_analysis_settings,
@@ -368,10 +376,12 @@ class WebService:
             db.execute("CREATE TABLE IF NOT EXISTS web_policy_state "
                        "(id INTEGER PRIMARY KEY CHECK(id=1), fingerprint TEXT, generation TEXT)")
         self.refresh()
+        self.changes = ChangeService(self)
 
     def refresh(self):
         try:
             db_settings = load_database_settings()
+            change_target = load_change_target()
             analysis = load_analysis_settings()
             query = load_query_settings()
             identities = read_identities(self.identity_path, db_settings.allowed_tables)
@@ -385,6 +395,7 @@ class WebService:
                 model = None
                 settings = None
             fingerprint = hashlib.sha256(json.dumps([
+                change_target.fingerprint() if change_target else None,
                 identities.model_dump(mode="json"), db_settings.kind,
                 db_settings.model_dump(mode="json", exclude={"password"}), model,
                 hashlib.sha256(db_settings.password.get_secret_value().encode()).hexdigest(),
@@ -413,6 +424,7 @@ class WebService:
         self.error = error
         if error:
             raise ConfigurationError(error)
+        self.change_target = change_target
         self.db_settings = db_settings
         self.settings = settings
         self.analysis = analysis
@@ -453,6 +465,9 @@ class WebService:
             except (ConfigurationError, OSError, sqlite3.Error):
                 valid = False
                 self.sessions.values.clear()
+            for task, session in list(self.changes.pending.items()):
+                if not valid or not self.sessions.valid(session, self.generation):
+                    task.cancel()
             for key, runtime in list(self.runtimes.items()):
                 for run_id, task in list(runtime.tasks.items()):
                     if not valid or not self.sessions.valid(
@@ -488,6 +503,7 @@ def create_app(
             finally:
                 tasks = [task for runtime in service.runtimes.values()
                          for task in runtime.tasks.values()]
+                tasks.extend(service.changes.pending)
                 tasks.append(watcher)
                 for task in tasks:
                     task.cancel()
@@ -645,6 +661,42 @@ def create_app(
                          "authorization_version": _session.get().generation},
             "model_boundary": MODEL_BOUNDARY,
         }
+
+    @app.get("/api/changes")
+    async def changes(request: Request):
+        service = request.app.state.service
+        service.authorize()
+        identity = service.identity(_session.get())
+        if (not service.change_target or not identity.change_targets
+                or getattr(service.db_settings, "kind", "mysql") != "mysql"):
+            return {"targets": [], "changes": [], "can_approve": False}
+        _, target, scope = service.changes.context()
+        return {"targets": [target.public()], "changes": service.changes.store.list(scope),
+                "can_approve": identity.change_approve}
+
+    @app.post("/api/changes/preview")
+    async def change_preview(payload: ChangeInput, request: Request):
+        return await request.app.state.service.changes.preview(payload)
+
+    @app.get("/api/changes/{identifier}")
+    async def change_get(identifier: str, request: Request):
+        return request.app.state.service.changes.get(identifier)
+
+    @app.post("/api/changes/{identifier}/approve")
+    async def change_approve(identifier: str, payload: ApprovalInput, request: Request):
+        return await request.app.state.service.changes.approve(identifier, payload)
+
+    @app.post("/api/changes/{identifier}/execute")
+    async def change_execute(identifier: str, payload: EmptyInput, request: Request):
+        return await request.app.state.service.changes.execute(identifier)
+
+    @app.post("/api/changes/{identifier}/reconcile")
+    async def change_reconcile(identifier: str, payload: EmptyInput, request: Request):
+        return await request.app.state.service.changes.reconcile(identifier)
+
+    @app.post("/api/changes/{identifier}/recover")
+    async def change_recover(identifier: str, payload: RecoveryInput, request: Request):
+        return await request.app.state.service.changes.recover(identifier, payload)
 
     @app.get("/api/conversations")
     async def conversations(request: Request):
