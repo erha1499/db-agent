@@ -443,3 +443,130 @@ def test_failed_turn_never_silently_reuses_old_successful_context(client, monkey
     )
     assert start(client, conversation, "按客户拆分").status_code == 422
     assert calls == ["查二月成交额", "改成一月"]
+
+
+def saved_delivery(client, monkeypatch, *, rows=None, truncated=False):
+    observation = result(rows=rows, truncated=truncated)
+    query = observation.queries[0]
+    query.report['result_id'] = uuid4().hex
+    query.report['result']['columns'] = [
+        {'name': 'value', 'type': 'date'}, {'name': 'value', 'type': 'decimal'},
+    ]
+    values = (
+        [['2026-01-01', '9007199254740993.01'], ['2026-03-01', '0.10']]
+        if rows is None else rows
+    )
+    query.report['result'].update(rows=values, row_count=len(values))
+
+    async def agent(*args, **kwargs):
+        return observation
+
+    monkeypatch.setattr(web, 'run_agent_observed', agent)
+    conversation = create(client)
+    run = terminal(client, start(client, conversation).json()['id'])
+    return conversation, run, (
+        f'/api/conversations/{conversation}/runs/{run["id"]}/results/{query.report["result_id"]}'
+    )
+
+
+def test_saved_result_analysis_export_restart_and_no_service_calls(app, monkeypatch):
+    with TestClient(app, base_url='http://127.0.0.1:8000', headers=HEADERS) as client:
+        conversation, run, path = saved_delivery(client, monkeypatch)
+
+    async def unexpected(*args, **kwargs):
+        pytest.fail('Delivery must not call the model or database')
+
+    monkeypatch.setattr(web, 'run_agent_observed', unexpected)
+    monkeypatch.setattr(web.MetadataConnector, 'execute_checked', unexpected)
+    with TestClient(app, base_url='http://127.0.0.1:8000', headers=HEADERS) as client:
+        snapshot = client.get(path).json()
+        assert snapshot['report'] == run['queries'][0]['report']
+        assert snapshot['analysis'] is None
+        selection = {'dimension': 0, 'measure': 1, 'kind': 'trend'}
+        response = client.post(path + '/analysis', json=selection)
+        assert response.status_code == 200, response.text
+        analysis = response.json()['analysis']
+        assert analysis['first_to_last_difference'] == '-9007199254740992.91'
+        for format in ['json', 'html']:
+            download = client.post(path + '/export', json={'format': format, 'analysis': selection})
+            assert download.status_code == 200
+            disposition = download.headers['Content-Disposition']
+            assert 'attachment; filename="db-agent-result-' in disposition
+            assert download.headers['Cache-Control'] == 'no-store'
+            assert download.headers['X-Content-Type-Options'] == 'nosniff'
+            assert '9007199254740993.01' in download.text
+            if format == 'json':
+                assert download.json()['report']['result'] == snapshot['report']['result']
+                assert download.json()['analysis'] == analysis
+            else:
+                assert '<svg ' in download.text
+                assert run['queries'][0]['sql'] in download.text
+        client.delete(f'/api/conversations/{conversation}')
+        assert client.get(path).status_code == 404
+        assert client.post(path + '/export', json={'format': 'json'}).status_code == 404
+
+
+def test_result_binding_scope_and_input_boundaries(client, app, monkeypatch):
+    conversation, run, path = saved_delivery(client, monkeypatch)
+    other = create(client)
+    assert client.get(path.replace(conversation, other)).status_code == 404
+    assert client.get(path.replace(run['id'], uuid4().hex)).status_code == 404
+    assert client.get(path.rsplit('/', 1)[0] + '/' + uuid4().hex).status_code == 404
+    assert client.get(path + '?path=/tmp/secret').status_code == 422
+    for extras in [{'path': '/tmp/secret'}, {'approved': True}, {'target': 'other'},
+                   {'result': {'rows': [[1000000]]}}]:
+        assert client.post(path + '/export', json={'format': 'json', **extras}).status_code == 422
+    assert client.post(path + '/analysis', json={
+        'dimension': True, 'measure': 1,
+    }).status_code == 422
+    for headers in [{'Origin': 'https://evil.example'}, {'X-DB-Agent-Client': ''},
+                    {'Host': 'evil.example'}, {'Sec-Fetch-Site': 'cross-site'}]:
+        assert client.get(path, headers=headers).status_code == 403
+        response = client.post(path + '/export', json={'format': 'html'}, headers=headers)
+        assert response.status_code == 403
+    app.state.runtime.scope = 'changed-source-or-authorization'
+    assert client.get(path).status_code == 404
+    assert client.post(path + '/analysis', json={'dimension': 0, 'measure': 1}).status_code == 404
+    assert client.post(path + '/export', json={'format': 'json'}).status_code == 404
+
+
+@pytest.mark.parametrize('state', ['running', 'failed', 'cancelled', 'interrupted', 'cancelling'])
+def test_nonterminal_or_failed_runs_not_deliverable(client, app, monkeypatch, state):
+    _, run, path = saved_delivery(client, monkeypatch)
+    run['status'] = state
+    app.state.runtime.store.update_run(run)
+    assert client.get(path).status_code == 409
+    assert client.post(path + '/export', json={'format': 'json'}).status_code == 409
+
+
+def test_live_unsaved_missing_duplicate_and_invalid_results(client, app, monkeypatch):
+    conversation, run, path = saved_delivery(client, monkeypatch)
+    runtime = app.state.runtime
+    runtime.unsaved_conversations.add(conversation)
+    assert client.get(path).status_code == 409
+    runtime.unsaved_conversations.clear()
+    original = json.loads(json.dumps(run))
+    run['queries'].append(run['queries'][0])
+    runtime.store.update_run(run)
+    assert client.get(path).status_code == 404
+    run = original
+    run['queries'][0]['report']['decision'] = 'BLOCK'
+    runtime.store.update_run(run)
+    assert client.get(path).status_code == 422
+    runtime.live[run['id']] = run
+    runtime.store.delete(conversation)
+    assert client.get(path).status_code == 404  # live fast path cannot restore deleted evidence
+
+
+@pytest.mark.parametrize('rows,truncated', [([], False), ([['2026-01-01', None]], False),
+                                           ([['2026-01-01', '1.00']], True)])
+def test_empty_null_and_truncated_delivery(client, monkeypatch, rows, truncated):
+    _, _, path = saved_delivery(client, monkeypatch, rows=rows, truncated=truncated)
+    snapshot = client.get(path).json()
+    assert snapshot['report']['result']['rows'] == rows
+    assert snapshot['report']['result']['truncated'] is truncated
+    download = client.post(path + '/export', json={'format': 'html'})
+    assert download.status_code == 200
+    assert ('结果已截断' in download.text) is truncated
+    if not rows:
+        assert '返回空集' in download.text

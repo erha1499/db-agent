@@ -9,6 +9,7 @@ export type QueryResult = {
   server_statement_status: string;
 };
 export type Report = {
+  result_id?: string;
   status?: string;
   decision: string;
   execution_status?: string;
@@ -24,6 +25,42 @@ export type Report = {
   limitations?: string[];
   checked_at?: string;
   database?: string;
+};
+export type AnalysisSelection = {
+  dimension: number;
+  measure: number;
+  kind: 'comparison' | 'trend';
+};
+export type ResultAnalysis = {
+  selection: AnalysisSelection;
+  dimension_label: string;
+  measure_label: string;
+  aggregation: 'sum';
+  points: {
+    dimension: string | number | boolean | null;
+    label: string;
+    sum: string | null;
+    position: number | null;
+    row_count: number;
+    non_null_count: number;
+  }[];
+  zero_position: number;
+  minimum: string | null;
+  maximum: string | null;
+  first_to_last_difference: string | null;
+  notes: string[];
+};
+export type ResultSnapshot = {
+  version: string;
+  conversation_id: string;
+  run_id: string;
+  result_id: string;
+  finished_at: string;
+  prompt: string;
+  sql: string;
+  report: Report & { result: QueryResult };
+  notes: string[];
+  analysis: ResultAnalysis | null;
 };
 export type Artifact = { sql: string; report: Report };
 export type RunEvent = {

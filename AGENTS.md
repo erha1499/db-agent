@@ -54,7 +54,7 @@
 - 当前支持单表、显式 INNER/LEFT JOIN ON、基础表达式与五种聚合。CTE/子查询/UNION/window 等 UNKNOWN；实际注释、侧效操作、越界对象与非批准函数明确拒绝。`db analyze` 只返回报告，生成报告成功为退出码 0，自动化必须读取 decision；这不是查询命令的退出码约定。
 - `query.py` 负责查询业务响应与记录，`results.py` 负责类型转换和有界结果；`MetadataConnector.execute_checked` 内部重新预检，不接收旧报告或 approved 参数。它在同一连接的 READ COMMITTED 显式 READ ONLY 事务中采集普通 EXPLAIN，计划前后两次核对所有对象为 BASE TABLE/InnoDB，并在事务开始后、派发 SELECT 前两次确认协议事务状态；仅 ALLOW 可发送原始 SQL。
 - `DB_AGENT_QUERY_*` 默认预算为 100 行、32768 结果 JSON 字节、64 列；SELECT 派发与读取共 5 秒，操作总预算 15 秒，包含排队、连接、分析和读取。分析阶段另受 10 秒分析预算限制；会话 time_zone 固定 +00:00，执行设置 max_execution_time。不得把结果字节预算说成扫描量、网络流量或单字段内存上限。
-- 查询响应的 status、decision、execution_status 分别判断；`db query` 退出码为 0（取得结果，包括截断）、3（规则拒绝）、1（取证或执行错误）、2（配置或 CLI 输入错误）。ALLOW 不等于成功；派发后失败可为 ALLOW + unknown，result 为空。result_id 仅关联当前结果，没有通用按结果 ID 取回接口；Web 单独保存本机会话快照。
+- 查询响应的 status、decision、execution_status 分别判断；`db query` 退出码为 0（取得结果，包括截断）、3（规则拒绝）、1（取证或执行错误）、2（配置或 CLI 输入错误）。ALLOW 不等于成功；派发后失败可为 ALLOW + unknown，result 为空。CLI result_id 仅关联当前结果；Web 支持当前可信会话已保存结果的取回与导出，不提供任意 CLI 结果取回。
 
 ## 本地 Web 入口
 
@@ -64,6 +64,8 @@
 - 运行请求先持久化再创建 asyncio Task；请求 ID 防重复派发，全局一次只运行一个任务。事件来自实际运行记录，答案保持非流式，轮询不重新执行。取消必须等待 Task 退出，协程开始前取消也需清理注册表；历史故障不能阻断取消。停止不能声称服务器 SQL 已确认取消，重启遗留任务标记 interrupted、不重放。
 - Web 使用显式 `previous_requests` 进入会话模式，历史仅取服务端完整成功查询的原始用户请求，主生成、合同提取与复核共享同一完整请求包；不能按用户文本前缀授予可信上下文。业务行、旧生成 SQL 和旧授权均不回放，原模型/工具/时限预算保持不变。失败、取消、截断、无查询或不完整查询证据后的连续口径暂停，要求新建对话完整重述；不静默回退到更早条件。详细范围见 [Web 使用说明](docs/web.md)。
 - UI 依据真实报告分别展示 decision、execution_status 和 result，显式显示缺报告、空集与截断；结果按列位置展示，金额与大整数不经 Number 转换，Markdown 禁用原始 HTML。SQL 诊断模式直接调用分析服务，不调用模型、不执行 SELECT。
+- `result_delivery.py` 对当前已保存结果执行确定性分组求和、时间趋势与报告生成，不读数据库、不调用模型；图形只近似归一化坐标，金额/整数标签与汇总保持精确字符串。NULL、重名列、SQL 范围与截断必须贯穿图表/报告/导出，100组分析超限整份拒绝，不静默裁剪。按返回值精确匹配，不承诺 MySQL collation 或一般 SQL 等价。
+- 结果 API 每次从持久化 store 按当前 source_scope 和 conversation/run/result 三个标识核对唯一结果，仅完成运行和一致有效报告可交付；不走 live 未落盘快路，不接受客户端原始结果、任意路径、目标或授权。HTML/JSON 服务端生成固定名附件，复用原同源请求边界；删除会话或切换配置重启后旧范围不可取回。下载的本机副本不会随会话删除。详见 [结果交付说明](docs/result-delivery.md)。
 - Web 定向验证：`uv run pytest tests/test_web.py -q`；前端：在 `frontend` 执行 `npm run build && npm run test:e2e`。浏览器合同测试使用明确的合成 HTTP 替身，不代表真实模型或数据库验收；真实页面链路另外验收。
 
 ## SQL 执行要求

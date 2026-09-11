@@ -34,6 +34,7 @@ import remarkGfm from 'remark-gfm';
 import hljs from 'highlight.js/lib/core';
 import sql from 'highlight.js/lib/languages/sql';
 import { api, message } from './api';
+import ResultDelivery from './ResultDelivery';
 import type {
   AppStatus,
   Artifact,
@@ -279,11 +280,23 @@ function Diagnosis({ report }: { report: Report }) {
   );
 }
 
-function EvidenceCard({ artifact, kind }: { artifact: Artifact; kind: 'query' | 'analysis' }) {
+function EvidenceCard({
+  artifact,
+  kind,
+  run,
+}: {
+  artifact: Artifact;
+  kind: 'query' | 'analysis';
+  run?: Run;
+}) {
   const cardId = useId();
   const { report } = artifact;
   const [tab, setTab] = useState(kind === 'query' ? 'result' : 'diagnosis');
   const isComplete = report.status === 'ok' && !!report.result;
+  const deliveryPath =
+    kind === 'query' && isComplete && report.result_id && run?.status === 'completed'
+      ? `/conversations/${run.conversation_id}/runs/${run.id}/results/${report.result_id}`
+      : null;
   const status =
     kind === 'analysis'
       ? 'SQL 诊断'
@@ -298,6 +311,7 @@ function EvidenceCard({ artifact, kind }: { artifact: Artifact; kind: 'query' | 
     kind === 'query'
       ? [
           ['result', '查询结果'],
+          ...(deliveryPath ? [['delivery', '分析与交付']] : []),
           ['sql', 'SQL'],
           ['diagnosis', '诊断'],
         ]
@@ -374,6 +388,9 @@ function EvidenceCard({ artifact, kind }: { artifact: Artifact; kind: 'query' | 
           </>
         )}
         {tab === 'diagnosis' && <Diagnosis report={report} />}
+        {tab === 'delivery' && deliveryPath && (
+          <ResultDelivery key={deliveryPath} path={deliveryPath} />
+        )}
       </div>
     </section>
   );
@@ -456,7 +473,7 @@ function RunMessage({
           )
         )}
         {run.queries.map((artifact, index) => (
-          <EvidenceCard key={`q-${index}`} artifact={artifact} kind="query" />
+          <EvidenceCard key={`q-${index}`} artifact={artifact} kind="query" run={run} />
         ))}
         {!!run.missing_query_reports && (
           <div className="notice warning" role="alert">
