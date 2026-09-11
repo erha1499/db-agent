@@ -22,6 +22,11 @@ INDEX = {
     "type": "BTREE",
 }
 CHECK = {"connection_ok": 1, "server_version": "8.4-stub", "database_name": "db_agent"}
+FOREIGN_KEY = {
+    "name": "fk_orders_user", "column_name": "id", "position": 1,
+    "referenced_schema": "db_agent", "referenced_table": "users",
+    "referenced_column": "id", "referenced_type": "BASE TABLE", "component_count": 1,
+}
 
 
 @pytest.fixture
@@ -169,7 +174,7 @@ def test_list_filters_allowlist_and_base_tables_in_database_query(settings, driv
 
 def test_describe_returns_ordered_column_and_index_metadata(settings, driver):
     pending, _ = driver
-    connection = FakeConnection([[TABLE], [COLUMN], [INDEX]])
+    connection = FakeConnection([[TABLE], [COLUMN], [INDEX], []])
     pending.append(connection)
 
     result = asyncio.run(MetadataConnector(settings).describe_table("orders"))
@@ -178,12 +183,197 @@ def test_describe_returns_ordered_column_and_index_metadata(settings, driver):
     assert result["indexes"] == [
         {"name": "PRIMARY", "unique": True, "column": "id", "position": 1, "type": "BTREE"}
     ]
-    for query, params in connection.queries[1:]:
+    assert result["foreign_keys"] == []
+    assert result["foreign_keys_scope"] == "current_database_authorized_tables"
+    for query, params in connection.queries[1:4]:
         assert "orders" not in query
         assert params[:2] == ("db_agent", "orders")
         assert "CAST(TABLE_NAME AS BINARY)" in query
         assert "COMMENT" not in query and "DEFAULT" not in query
     assert connection.closed
+
+
+@pytest.mark.parametrize("foreign_keys,expected", [
+    ([FOREIGN_KEY], [{"name": "fk_orders_user", "columns": ["id"],
+                      "referenced_table": "users", "referenced_columns": ["id"]}]),
+    ([{**FOREIGN_KEY, "position": 2, "column_name": "user_id",
+       "referenced_column": "user_id", "component_count": 2},
+      {**FOREIGN_KEY, "component_count": 2}],
+     [{"name": "fk_orders_user", "columns": ["id", "user_id"],
+       "referenced_table": "users", "referenced_columns": ["id", "user_id"]}]),
+    ([{**FOREIGN_KEY, "name": "fk_z"}, {**FOREIGN_KEY, "name": "fk_a"}],
+     [{"name": name, "columns": ["id"], "referenced_table": "users",
+       "referenced_columns": ["id"]} for name in ("fk_a", "fk_z")]),
+], ids=["single", "composite_positions", "constraint_order"])
+def test_foreign_keys_keep_complete_ordered_column_pairs(settings, driver, foreign_keys, expected):
+    pending, calls = driver
+    columns = [COLUMN, {**COLUMN, "name": "user_id", "position": 2}]
+    connection = FakeConnection([[TABLE], columns, [INDEX], foreign_keys])
+    pending.append(connection)
+
+    result = asyncio.run(MetadataConnector(settings).describe_table("orders"))
+
+    assert result["foreign_keys"] == expected
+    assert result["foreign_keys_scope"] == "current_database_authorized_tables"
+    assert len(calls) == 1 and connection.closed
+    assert all(cursor.closed for cursor in connection.cursors)
+
+
+def test_foreign_key_query_filters_targets_before_reading_constraint_fields(settings, driver):
+    pending, _ = driver
+    connection = FakeConnection([[TABLE], [COLUMN], [INDEX], []])
+    pending.append(connection)
+
+    asyncio.run(MetadataConnector(settings).describe_table("orders"))
+
+    query, params = connection.queries[-1]
+    assert "FROM information_schema.KEY_COLUMN_USAGE AS k" in query
+    assert "JOIN information_schema.TABLES AS t" in query
+    assert "CAST(k.TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)" in query
+    assert "CAST(k.TABLE_NAME AS BINARY) = CAST(%s AS BINARY)" in query
+    assert "CAST(k.REFERENCED_TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)" in query
+    assert "CAST(k.REFERENCED_TABLE_NAME AS BINARY) IN (%s, %s)" in query
+    assert "CAST(t.TABLE_SCHEMA AS BINARY) = CAST(k.REFERENCED_TABLE_SCHEMA AS BINARY)" in query
+    assert "CAST(t.TABLE_NAME AS BINARY) = CAST(k.REFERENCED_TABLE_NAME AS BINARY)" in query
+    assert "t.TABLE_TYPE = 'BASE TABLE'" in query
+    assert "COUNT(*) OVER" in query and "ORDINAL_POSITION" in query
+    assert "COMMENT" not in query and "DEFAULT" not in query
+    assert all(value not in query for value in ("db_agent", "orders", "users"))
+    assert params == ("db_agent", "orders", "db_agent", "orders", "users", 199)
+
+
+@pytest.mark.parametrize("override", [
+    {"referenced_schema": "private_database"}, {"referenced_schema": "DB_AGENT"},
+    {"referenced_table": "private_table"}, {"referenced_table": "Users"},
+    {"referenced_type": "VIEW"}, {"name": "private-invalid-name"},
+    {"column_name": "private_column"}, {"referenced_column": "private.invalid"},
+    {"position": True}, {"position": 0}, {"component_count": True},
+    {"component_count": 2},
+])
+def test_invalid_foreign_key_evidence_fails_with_a_fixed_error(
+    settings, driver, override,
+):
+    pending, _ = driver
+    connection = FakeConnection([[TABLE], [COLUMN], [INDEX], [{**FOREIGN_KEY, **override}]])
+    pending.append(connection)
+
+    with pytest.raises(DatabaseError) as error:
+        asyncio.run(MetadataConnector(settings).describe_table("orders"))
+
+    assert error.value.code == "INVALID_METADATA"
+    assert "private" not in "".join(traceback.format_exception(error.value))
+    assert connection.closed
+
+
+@pytest.mark.parametrize("second", [
+    {"position": 1}, {"position": 3}, {"referenced_table": "orders"},
+    {"component_count": 3}, {"referenced_column": "id"}, {"column_name": "id"},
+])
+def test_foreign_key_components_cannot_be_missing_duplicated_or_mixed(settings, driver, second):
+    pending, _ = driver
+    first = {**FOREIGN_KEY, "component_count": 2}
+    next_component = {**first, "position": 2, "column_name": "user_id",
+                      "referenced_column": "user_id", **second}
+    connection = FakeConnection([
+        [TABLE], [COLUMN, {**COLUMN, "name": "user_id", "position": 2}], [INDEX],
+        [first, next_component],
+    ])
+    pending.append(connection)
+
+    with pytest.raises(DatabaseError) as error:
+        asyncio.run(MetadataConnector(settings).describe_table("orders"))
+
+    assert error.value.code == "INVALID_METADATA" and connection.closed
+
+
+def test_foreign_key_rows_share_column_and_index_budget_without_partial_results(settings, driver):
+    pending, _ = driver
+    connection = FakeConnection([[TABLE], [COLUMN], [INDEX], [FOREIGN_KEY]])
+    pending.append(connection)
+    limited = settings.model_copy(update={"max_metadata_rows": 2})
+
+    with pytest.raises(DatabaseError) as error:
+        asyncio.run(MetadataConnector(limited).describe_table("orders"))
+
+    assert error.value.code == "RESULT_LIMIT"
+    assert connection.queries[-1][1][-1] == 1
+    assert connection.closed and not connection.cursors[-1].closed
+
+
+def test_foreign_key_raw_rows_share_metadata_byte_budget(settings, driver):
+    pending, _ = driver
+    foreign_keys = [{**FOREIGN_KEY, "name": "fk_" + str(index) + "x" * 50} for index in range(4)]
+    connection = FakeConnection([[TABLE], [COLUMN], [INDEX], foreign_keys])
+    pending.append(connection)
+    limited = settings.model_copy(update={"max_metadata_bytes": 1024})
+
+    with pytest.raises(DatabaseError) as error:
+        asyncio.run(MetadataConnector(limited).describe_table("orders"))
+
+    assert error.value.code == "RESULT_LIMIT"
+    assert connection.closed and not connection.cursors[-1].closed
+
+
+def test_foreign_key_scope_and_grouped_envelope_share_final_byte_budget(settings, driver):
+    pending, _ = driver
+    connection = FakeConnection([[TABLE], [COLUMN], [INDEX], []])
+    pending.append(connection)
+    previous = {"database": "db_agent", "table": "orders", "columns": [COLUMN],
+                "indexes": [{"name": "PRIMARY", "unique": True, "column": "id",
+                             "position": 1, "type": "BTREE"}]}
+    limited = settings.model_copy(update={"max_metadata_bytes": len(json.dumps(previous).encode())})
+
+    with pytest.raises(DatabaseError) as error:
+        asyncio.run(MetadataConnector(limited).describe_table("orders"))
+
+    assert error.value.code == "RESULT_LIMIT"
+    assert "KEY_COLUMN_USAGE" in connection.queries[-1][0]
+    assert connection.closed and connection.cursors[-1].closed
+
+
+def test_foreign_key_driver_error_is_sanitized_without_draining_cursor(settings, driver):
+    pending, _ = driver
+    connection = FakeConnection([
+        [TABLE], [COLUMN], [INDEX], aiomysql.OperationalError(2013, "private-target-constraint"),
+    ])
+    pending.append(connection)
+
+    with pytest.raises(DatabaseError) as error:
+        asyncio.run(MetadataConnector(settings).describe_table("orders"))
+
+    assert error.value.code == "CONNECTION_ERROR"
+    assert "private-target" not in "".join(traceback.format_exception(error.value))
+    assert connection.closed and not connection.cursors[-1].closed
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "cancel"])
+def test_foreign_key_wait_uses_existing_deadline_and_cancellation_cleanup(settings, driver, cancel):
+    pending, calls = driver
+
+    async def scenario():
+        started = asyncio.Event()
+
+        async def pause_last_query():
+            if "KEY_COLUMN_USAGE" in connection.queries[-1][0]:
+                started.set()
+                await asyncio.Event().wait()
+
+        connection = FakeConnection([[TABLE], [COLUMN], [INDEX], []], pause_last_query)
+        pending.append(connection)
+        limited = settings.model_copy(update={"metadata_timeout_seconds": 0.05})
+        task = asyncio.create_task(MetadataConnector(limited).describe_table("orders"))
+        await asyncio.wait_for(started.wait(), 1)
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(DatabaseError) as error:
+                await task
+            assert error.value.code == "TIMEOUT"
+        assert len(calls) == 1 and connection.closed and not connection.cursors[-1].closed
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(

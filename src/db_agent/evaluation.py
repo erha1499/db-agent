@@ -30,7 +30,8 @@ from db_agent.records import RunRecord
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CASE_FILE = PROJECT_ROOT / "evals" / "ecommerce-v1.json"
 SUITE_FILES = {
-    name: CASE_FILE.with_name(f"ecommerce-{name}.json") for name in ("v1", "v2", "v3", "v4", "v5")
+    name: CASE_FILE.with_name(f"ecommerce-{name}.json")
+    for name in ("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8")
 }
 TABLES = frozenset({
     "ec_customers", "ec_products", "ec_orders", "ec_order_items", "ec_payments", "ec_refunds",
@@ -55,7 +56,7 @@ def load_cases(
     split: str, path: Path | None = None, *, suite: str = "v1",
 ) -> tuple[dict, list[dict]]:
     if suite not in SUITE_FILES:
-        raise EvaluationError("评测 suite 必须为 v1、v2、v3、v4 或 v5。")
+        raise EvaluationError("评测 suite 必须为 v1、v2、v3、v4、v5、v6、v7 或 v8。")
     if split not in {"dev", "holdout"}:
         raise EvaluationError("评测 split 必须为 dev 或 holdout。")
     path = SUITE_FILES[suite] if path is None else path
@@ -111,9 +112,10 @@ def load_cases(
     return {
         "suite": suite, "suite_version": suite_version,
         "dataset_version": document["dataset_version"],
-        # Every existing suite has now informed diagnosis or implementation.
-        # Preserve its original split and first-run reports, but label reruns honestly.
-        "split_role": "exposed_regression",
+        "split_role": (
+            "held_out_acceptance" if suite == "v8" and split == "holdout"
+            else "exposed_regression"
+        ),
         "business_context_sha256": _digest(business_context.encode()) if business_context else None,
         "inputs_sha256": _digest(json.dumps([
             {"id": case["id"], "prompt": _prompt(case), "sql": case["sql"]}
@@ -147,16 +149,63 @@ def validate_environment(
     return database.model_copy(update={"allowed_tables": tuple(sorted(granted))}, deep=True)
 
 
-def _same_rows(actual: object, expected: list, ordered: bool) -> bool:
-    if not isinstance(actual, list):
+def _same_rows(actual: object, expected: list, ordered: bool, columns: object = None) -> bool:
+    if (
+        not isinstance(actual, list) or not isinstance(expected, list)
+        or not isinstance(columns, list) or not columns
+        or any(not isinstance(column, dict)
+               or not isinstance(column.get("name"), str)
+               or not isinstance(column.get("type"), str) for column in columns)
+        or len(actual) != len(expected)
+        or any(not isinstance(row, list) or len(row) != len(columns)
+               for rows in (actual, expected) for row in rows)
+    ):
         return False
-    # A multiset preserves duplicates while ignoring order the SQL never promised.
-    def encode(row):
-        return json.dumps(row, ensure_ascii=False, sort_keys=True)
+    integer_columns = {
+        index for index, column in enumerate(columns)
+        if column["type"] == "decimal"
+        and any(type(row[index]) is int for row in expected)
+        and all(row[index] is None or type(row[index]) is int for row in expected)
+    }
 
+    def integer_decimal(value):
+        # MySQL fixed DECIMAL: at most 65 digits / 30 fractional digits. Reject
+        # exponents before parsing; never round, use float, or expand an exponent.
+        if not isinstance(value, str) or not 1 <= len(value) <= 67:
+            return None
+        unsigned = value.removeprefix("-")
+        integer, separator, fraction = unsigned.partition(".")
+        if (
+            not integer.isascii() or not integer.isdigit()
+            or (len(integer) > 1 and integer.startswith("0"))
+            or len(integer) + len(fraction) > 65
+            or (separator and (not fraction or len(fraction) > 30
+                               or any(char != "0" for char in fraction)))
+        ):
+            return None
+        return int(("-" if value.startswith("-") else "") + integer)
+
+    # A multiset preserves duplicates while ignoring order the SQL never promised.
+    def encode(row, *, observed):
+        normalized = list(row)
+        if observed:
+            for index in integer_columns:
+                value = row[index]
+                if value is None or type(value) is int:
+                    continue
+                normalized[index] = integer_decimal(value)
+                if normalized[index] is None:
+                    raise ValueError
+        return json.dumps(normalized, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+    try:
+        actual_rows = [encode(row, observed=True) for row in actual]
+        expected_rows = [encode(row, observed=False) for row in expected]
+    except (TypeError, ValueError):
+        return False
     if ordered:
-        return list(map(encode, actual)) == list(map(encode, expected))
-    return Counter(map(encode, actual)) == Counter(map(encode, expected))
+        return actual_rows == expected_rows
+    return Counter(actual_rows) == Counter(expected_rows)
 
 
 def assess_report(case: dict, report: dict) -> list[str]:
@@ -188,7 +237,8 @@ def assess_report(case: dict, report: dict) -> list[str]:
         if not isinstance(actual_result, dict):
             failures.append("data_error")
         elif (
-            not _same_rows(actual_result.get("rows"), expected["rows"], expected["ordered"])
+            not _same_rows(actual_result.get("rows"), expected["rows"], expected["ordered"],
+                           actual_result.get("columns"))
             or actual_result.get("row_count") != len(expected["rows"])
             or actual_result.get("truncated") != expected["truncated"]
             or actual_result.get("server_statement_status") != (

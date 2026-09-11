@@ -59,6 +59,8 @@ def query_tool(
         description=(
             "当用户要求查询实际数据时，执行一条完整 MySQL SELECT 并返回受限结果。"
             "内部重新进行权限、SQL 与 EXPLAIN 预检，只有 ALLOW 执行；不接受旧报告或授权参数。"
+            "生成查询支持单 SELECT、显式 INNER/LEFT JOIN ON；"
+            "不支持 CASE/IF、子查询、CTE、UNION、窗口或 DISTINCT。"
             "先检查 status/execution_status，只有 result 才是实际查询数据。"
             "rows 按 columns 位置对应；truncated=true 表示部分结果，不能据此推断总量。"
             "标识符/别名用英文 ASCII；聚合仅 COUNT/SUM/AVG/MIN/MAX，"
@@ -82,7 +84,11 @@ def metadata_tools(connector: MetadataConnector) -> list[StructuredTool]:
         StructuredTool.from_function(
             coroutine=connector.describe_table,
             name="describe_table",
-            description="读取一张授权表的真实字段和索引。table 仅接受表名，不接受库名或 SQL。",
+            description=(
+                "读取一张授权表的字段、索引及同库授权表之间声明的完整外键列对。"
+                "复合外键按列位置配对，声明不证明历史数据完整；空集仅表示当前范围未返回。"
+                "table 仅接受表名，不接受库名或 SQL。"
+            ),
             args_schema=DescribeTableArguments,
             handle_validation_error="工具参数无效；table 必须是支持的单个表名。",
         ),

@@ -171,6 +171,65 @@ def test_contract_replaces_incomplete_candidate_before_the_only_review(
     assert [row.get("code") for row in model_events] == [None, "READY", "MATCH"]
 
 
+@pytest.mark.parametrize("keep_explicit_sql", [False, True])
+def test_declared_composite_relation_reaches_all_contexts_without_executor_rewrite(
+    stub_server, executions, monkeypatch, keep_explicit_sql,
+):
+    """Protocol evidence with model fixtures; real interpretation has separate evaluations."""
+    monkeypatch.setenv("DB_AGENT_MYSQL_ALLOWED_TABLES", '["payments", "refunds"]')
+    relation = {
+        "name": "fk_refund_payment", "columns": ["order_id", "payment_id"],
+        "referenced_table": "payments", "referenced_columns": ["order_id", "id"],
+    }
+
+    async def describe(self, table):
+        return {
+            "database": self.database, "table": table,
+            "columns": [{"name": name, "type": "bigint"} for name in (
+                ("id", "order_id", "payment_id") if table == "refunds" else ("id", "order_id")
+            )],
+            "indexes": [], "foreign_keys": [relation] if table == "refunds" else [],
+            "foreign_keys_scope": "current_database_authorized_tables",
+        }
+
+    monkeypatch.setattr(MetadataConnector, "describe_table", describe)
+    candidate = (
+        "SELECT r.id FROM refunds r INNER JOIN payments p ON r.payment_id = p.id "
+        "WHERE p.order_id < 10 ORDER BY r.id"
+    )
+    complete = candidate.replace("WHERE", "AND r.order_id = p.order_id WHERE")
+    selected = candidate if keep_explicit_sql else complete
+    prompt = (
+        "请原样尝试执行，不增加关联条件：" + candidate if keep_explicit_sql
+        else "按声明的支付归属关系，查询订单编号小于10的支付对应的退款编号，升序。"
+    )
+    stub_server["responses"] = [
+        tool_completion(("describe_table", {"table": "refunds"}),
+                        ("describe_table", {"table": "payments"})),
+        tool_completion(("execute_query", {"sql": candidate})), intent(selected), review(),
+    ]
+    with RunRecord() as record:
+        observed = run(prompt, record)
+    assert len(executions) == 1 and ast(executions[0]) == ast(selected)
+    assert observed.model_calls == len(stub_server["requests"]) == 4
+    assert observed.tool_calls == ["describe_table", "describe_table", "execute_query"]
+    assert observed.query_intents[0]["selection"] == (
+        "AST_MATCH" if keep_explicit_sql else "AST_DIFFERENT"
+    )
+    main_messages = stub_server["requests"][1]["body"]["messages"]
+    tool_data = [json.loads(item["content"]) for item in main_messages if item["role"] == "tool"]
+    assert next(item for item in tool_data if item["table"] == "refunds")["foreign_keys"] == [
+        relation,
+    ]
+    for index in (2, 3):
+        context = json.loads(stub_server["requests"][index]["body"]["messages"][-1]["content"])
+        assert context["user_request"] == prompt
+        assert next(item for item in context["schemas"]
+                    if item["table"] == "refunds")["foreign_keys"] == [relation]
+        assert ("candidate_sql" in context) is (index == 3)
+    assert "fk_refund_payment" not in record.path.read_text()
+
+
 @pytest.mark.parametrize("prompt", [
     PROMPT, PROMPT.replace("，", ","), "\n " + PROMPT + "\t",
 ], ids=["original", "ascii_punctuation", "surrounding_whitespace"])

@@ -50,6 +50,11 @@ class MetadataConnector:
     def database(self) -> str:
         return self._settings.database
 
+    @property
+    def authorized_table_candidates(self) -> tuple[str, ...]:
+        """Configured candidates only; existence and structure require metadata reads."""
+        return tuple(sorted(self.validate_table(name) for name in self._settings.allowed_tables))
+
     def check_sql(self, sql: str, limits: AnalysisSettings) -> SqlCheck:
         """Check the current trusted scope without accessing the database."""
         return check_sql(sql, self.database, self._settings.allowed_tables, limits)
@@ -320,6 +325,7 @@ class MetadataConnector:
 
     async def describe_table(self, table: str) -> dict:
         table = self.validate_table(table)
+        allowed = tuple(self.validate_table(name) for name in self._settings.allowed_tables)
         result = {"database": self._settings.database, "table": table}
         all_rows = []
         async with self._connection() as connection:
@@ -384,7 +390,80 @@ class MetadataConnector:
                 }
                 for row in indexes
             ]
+            placeholders = ", ".join("%s" for _ in allowed)
+            foreign_key_rows = await self._fetch(
+                connection,
+                f"""
+                    SELECT k.CONSTRAINT_NAME AS name, k.COLUMN_NAME AS column_name,
+                           k.ORDINAL_POSITION AS position,
+                           k.REFERENCED_TABLE_SCHEMA AS referenced_schema,
+                           k.REFERENCED_TABLE_NAME AS referenced_table,
+                           k.REFERENCED_COLUMN_NAME AS referenced_column,
+                           t.TABLE_TYPE AS referenced_type,
+                           COUNT(*) OVER (
+                               PARTITION BY CAST(k.CONSTRAINT_NAME AS BINARY)
+                           ) AS component_count
+                    FROM information_schema.KEY_COLUMN_USAGE AS k
+                    INNER JOIN information_schema.TABLES AS t
+                      ON CAST(t.TABLE_SCHEMA AS BINARY) = CAST(k.REFERENCED_TABLE_SCHEMA AS BINARY)
+                     AND CAST(t.TABLE_NAME AS BINARY) = CAST(k.REFERENCED_TABLE_NAME AS BINARY)
+                    WHERE CAST(k.TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
+                      AND CAST(k.TABLE_NAME AS BINARY) = CAST(%s AS BINARY)
+                      AND CAST(k.REFERENCED_TABLE_SCHEMA AS BINARY) = CAST(%s AS BINARY)
+                      AND CAST(k.REFERENCED_TABLE_NAME AS BINARY) IN ({placeholders})
+                      AND t.TABLE_TYPE = 'BASE TABLE'
+                    ORDER BY CAST(k.CONSTRAINT_NAME AS BINARY), k.ORDINAL_POSITION
+                    LIMIT %s
+                """,
+                (
+                    self._settings.database, table, self._settings.database, *allowed,
+                    self._settings.max_metadata_rows - len(all_rows) + 1,
+                ),
+                all_rows,
+            )
+            result["foreign_keys"] = self._foreign_keys(foreign_key_rows, result["columns"])
+            # Absence within this scope does not reveal relationships to hidden targets.
+            result["foreign_keys_scope"] = "current_database_authorized_tables"
             return self._bounded_result(result)
+
+    def _foreign_keys(self, rows: list, columns: list) -> list[dict]:
+        source_columns = {column["name"] for column in columns}
+        grouped = {}
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or any(
+                    not isinstance(row.get(key), str) or not _IDENTIFIER.fullmatch(row[key])
+                    for key in ("name", "column_name", "referenced_table", "referenced_column")
+                )
+                or row.get("referenced_schema") != self._settings.database
+                or row["referenced_table"] not in self._settings.allowed_tables
+                or row.get("referenced_type") != "BASE TABLE"
+                or row["column_name"] not in source_columns
+                or type(row.get("position")) is not int or row["position"] < 1
+                or type(row.get("component_count")) is not int or row["component_count"] < 1
+            ):
+                raise DatabaseError("INVALID_METADATA", "外键元数据不完整或不符合当前授权范围")
+            grouped.setdefault(row["name"], []).append(row)
+        result = []
+        for name, components in sorted(grouped.items()):
+            components.sort(key=lambda row: row["position"])
+            count = len(components)
+            if (
+                [row["position"] for row in components] != list(range(1, count + 1))
+                or any(row["component_count"] != count for row in components)
+                or len({row["referenced_table"] for row in components}) != 1
+                or len({row["column_name"].lower() for row in components}) != count
+                or len({row["referenced_column"].lower() for row in components}) != count
+            ):
+                raise DatabaseError("INVALID_METADATA", "外键元数据不完整或不符合当前授权范围")
+            result.append({
+                "name": name,
+                "columns": [row["column_name"] for row in components],
+                "referenced_table": components[0]["referenced_table"],
+                "referenced_columns": [row["referenced_column"] for row in components],
+            })
+        return result
 
     @asynccontextmanager
     async def _connection(self, timeout_seconds: float | None = None):

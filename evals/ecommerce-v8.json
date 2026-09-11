@@ -1,0 +1,2234 @@
+{
+  "suite_version": "ecommerce-eval-v8",
+  "dataset_version": "ecommerce-v1",
+  "created_at": "2026-09-11T02:43:12.994574+00:00",
+  "required_dataset": {
+    "orders": 1000000,
+    "customers": 100000,
+    "products": 10000,
+    "boundary_ids": "1..8",
+    "background_ids": ">=1000",
+    "time_convention": "Synthetic business timestamps are DATETIME; fixture contract interprets them as UTC. DATETIME itself carries no timezone.",
+    "seed": 20260910
+  },
+  "provenance": {
+    "regression_source": "ecommerce-v7.json",
+    "regression_source_sha256": "fcd9cfaf0af2d8485dea41eef49e50b8412442a44d5bcafcf01c89e4712e2a9d",
+    "previous_suite_file_sha256": {
+      "evals/ecommerce-v1.json": "250cd649e8fe7dce2be92deeb6bc46176d4d213a01091e1f272263f741850f84",
+      "evals/ecommerce-v2.json": "99d155b4fe06728cf45712da4479ac08b35cbb6d979288e7d425b5a0cb8fd388",
+      "evals/ecommerce-v3.json": "b79c705826029a286a2698ac42ed8ecb39eddd921e4b102ed1b05acca3100d92",
+      "evals/ecommerce-v4.json": "71d0b7b92006299b6d7a16edc19af8c5c69ce2309de3489137013e506adf4baa",
+      "evals/ecommerce-v5.json": "59e305d40de21563988804ca5a07c907aadff1d6af3f323f664d399c74d6f8f8",
+      "evals/ecommerce-v6.json": "851216ec3a32088c394ea990b783d3cc9ebb723ca6f214c0c26adcd0e7beee03",
+      "evals/ecommerce-v7.json": "fcd9cfaf0af2d8485dea41eef49e50b8412442a44d5bcafcf01c89e4712e2a9d"
+    },
+    "regression_status": "All 64 v7 cases are exposed development regression. Preserve every case field except split=dev; original v1-v7 JSON bytes and all historical reports remain unchanged.",
+    "holdout_policy": "Eight independent new business tasks. Predetermine SQL dev64x1/holdout8x1 and Agent dev64x1/holdout8x2; retain every attempt and failure. No model, database, data generator, or outputs path is accessed during construction. Tasks contain no implementation restrictions or reference SQL answers. New outcomes must not tune these tasks, SQL or expected values.",
+    "holdout_oracle_basis": "Independent manual reconstruction from the public fixed ecommerce-v1 literal ledger and closed-form cohort/customer/catalog formulas. Official MySQL documentation is used only for exact aggregate return types, not to supply business data. No observed model output, query row or generator aggregation is an oracle.",
+    "case_content_frozen_at": "2026-09-11T02:43:12.994574+00:00",
+    "case_content_sha256": "1e7f152555d6ee5a8be9356155e97fb3132a0e70f8023073421b83142ed4f700",
+    "holdout_content_sha256": "0944cbcdb74de3ee38556a110eb4bc7574f9ec86c997686f26dbfa56fa802f42",
+    "content_hash_encoding": "SHA256 of UTF-8 json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(comma,colon)); case_content covers cases; holdout_content covers the ordered eight holdout cases.",
+    "production_freeze_status": "frozen_before_first_v8_execution",
+    "product_freeze_captured_at": "2026-09-11T02:46:30.274238+00:00",
+    "product_prompt_sha256_before_acceptance": {
+      "SYSTEM_PROMPT": "c6a4807873aec9e9bdeaa488933cbc413060d7d32a8abe09d56b7f7e4744fa39",
+      "INTENT_PROMPT": "be5d2b9e360ddb36b2196f871c1016913e0ceea6c5283cdf6fb2c9d4362cbd67",
+      "SEMANTIC_REVIEW_PROMPT": "b2c7890660477b0f1ba0594b8ebe9136e57874993797f8f5663f2142892c541d"
+    },
+    "product_source_snapshot": {
+      "files": {
+        "src/db_agent/__init__.py": "f3e158c4a08ea3e6398a34fd2264d1461b13f0956fa29cdc3cb145bdefbcdd16",
+        "src/db_agent/__main__.py": "75af0a9f9e570b2b504fd284f848357d341562644c809ecd20cac05c15e410d8",
+        "src/db_agent/agent.py": "9dc65bf38fe48ce679fb2a8f7e79ec09b134a8bf234add03192ec7fc73ea540e",
+        "src/db_agent/analysis.py": "493d04c0cd03ca7214f9d07f45f94774162af794694be83bb4397044b55fd742",
+        "src/db_agent/cli.py": "5ec943a84ae4c269a449eceb0e349e005fe3ec29a2c276ea1f2f938d040417a2",
+        "src/db_agent/config.py": "eb09e6bc272e9e756b9fba438ff4999c72609b4eb487e6bac3c48832a10e33b1",
+        "src/db_agent/db.py": "ce978be91f70a1cb7b5f8cde15f508f4b10fe35f8b194c53d7c677a1bd48a4e2",
+        "src/db_agent/ecommerce.py": "525253f9f7ed5009811acb950915beeb0ced60221aac90ae9ec3cee5d9b2501d",
+        "src/db_agent/evaluation.py": "e6453dc74b499dd2d0f24a062ac5771a7e909b06df62d2007f9958016d56dddc",
+        "src/db_agent/intents.py": "0d32d90fa9115bcf22b139fa2c7468a84b8182d4f16c3a2561a58220032c9779",
+        "src/db_agent/plans.py": "77394c94c9583964ad4fa3dc2423b60dbc466a3d683a298b44e787c7884f7dcb",
+        "src/db_agent/policy.py": "63378146accc8e43012c13e4d1465ea6f8a9427b502388ff2e121dc2e7fafe0a",
+        "src/db_agent/presentation.py": "449c8cb348682798cf243ca7c7b0f40e2ed9ef56dbb5dcccc9e4b4bb313cb719",
+        "src/db_agent/query.py": "5a6f20b035bee30b3576b5a38e2014995a0cac0b947d8f03ccbb12d3c90e9d9f",
+        "src/db_agent/records.py": "485a6a18d348866afcbf38f88feb1a09e14de34870c44f5b0d76212777e1c9d5",
+        "src/db_agent/results.py": "b18e138c20ec0fe09fb2e5cb7e6db2849e1c72ab3f9b495e4a849f91cd07fa99",
+        "src/db_agent/semantics.py": "52b520d0dc597ed027b6068c03839a2cf2e1e2a8e12651c522d3509020ab872b",
+        "src/db_agent/tools.py": "012bcd81e63a156a46ca5c360f1f378ca3ed14d1bdef963e864a0e4c53ca9f8c",
+        "uv.lock": "b886e2a80f52e66f5d930cc86fe1f24563ddf21f0bbdc4092177873889a7823c",
+        "scripts/evaluate_ecommerce.py": "d42163e9be0c8277a27a4108e08127b4a123c76c4547769d131e61182a4df368"
+      },
+      "sha256": "81ecadd8fbcd5f1df14e7c52f9953ed7fce7e06a9b64721917d5fc0bbf05ed0d"
+    },
+    "semantic_freeze_note": "The eight business tasks and manual expected values were fixed while general production work based solely on exposed earlier tasks was in progress. After final offline validation and independent oracle review, final product source and three static prompts were captured before any v8 SQL or Agent execution. Production clarifies the already unsupported CASE expression and limits integer/Decimal result comparison to exact numeric equivalence backed by actual trusted decimal-column metadata; no float approximation, rounding, string-wide coercion, permission or budget expansion is authorized. This provenance update changes no case, SQL, oracle, expected value, shared dictionary, earlier suite bytes or historical report. New tasks and answers never enter product prompts; actual runtime inputs and outputs remain separately bound by run reports.",
+    "predeclared_sql_dev_repeat": 1,
+    "predeclared_sql_holdout_repeat": 1,
+    "predeclared_agent_dev_repeat": 1,
+    "predeclared_agent_holdout_repeat": 2,
+    "known_regression_boundary": "The unchanged v5 partial-payment-refund reference SQL retains its known REVIEW risk under existing plan thresholds. Preserve this and every other failure in the full64-case SQL dev denominator. Do not rewrite legacy cases or historical reports, and do not substitute reference SQL execution for actual Agent business success.",
+    "independent_oracle_review": "A separate reviewer manually checked all eight tasks using only the public literal ecommerce-v1 ledger, SKU and cohort/customer formulas, schema/result conversion code, and official MySQL8.4 exact aggregate type documentation. Expected row counts2,3,2,0,2,2,3,5, order, negative/zero monetary differences, SKU zero padding, page timestamps and NULL region counts agree. New tasks differ substantively from all64 earlier tasks. No correction was required. The reviewer independently verified preserved legacy fields, business dictionary and v1-v7 byte hashes plus case/holdout/source hashes, and ran pure offline check_sql:8/8 STATIC_ALLOW,120-372 UTF-8 bytes,26-90 AST nodes. No model/database/generator/outputs access or file edits occurred. Actual MySQL plans, business results and bounded runtime completion remain unverified until execution."
+  },
+  "business_context": "可信业务字典（来源：公开 ecommerce-v1 数据协议；适用于本套件所有题目）：ec_orders.status 的取值为 pending、cancelled、paid、refunded、partially_refunded；题目中的已支付订单包括 paid、refunded、partially_refunded，订单毛额为 total_amount，不自动扣减退款。ec_payments.status 为 pending、failed、succeeded，成功支付明确指 status=succeeded，到账日期用 paid_at。ec_refunds.status 为 pending、failed、succeeded，成功退款明确指 status=succeeded，完成日期用 completed_at，申请日期用 created_at。退款通过 payment_id 关联支付 id，退款金额取退款 amount；商品销售净额按明细 quantity*unit_price-discount_amount。固定验收客户和订单 id 为1至8，固定商品 id 为1至6，背景记录 id 从1000起且不引用固定客户商品。本合成数据的业务日期约定按UTC解释，但DATETIME字段本身不携带时区。题目未授予新的表权限、执行权限或额外预算；仍使用原有受控工具与服务端配置。",
+  "cases": [
+    {
+      "id": "dev_created_feb",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次 ec_orders 的固定验收订单（id<1000）：按 created_at 统计 2026 年 2 月已支付订单笔数和订单金额，已支付状态包括 paid、partially_refunded、refunded。返回两列：笔数、金额。使用左闭右开月份边界，不推算月份天数；只执行一条查询。",
+      "sql": "SELECT COUNT(*) AS order_count, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 AND status IN ('paid', 'partially_refunded', 'refunded') AND created_at >= '2026-02-01' AND created_at < '2026-03-01'",
+      "oracle": "Manual boundary ledger: orders 2,4,6 were created in February and have settled statuses; 90+0+50=140. Order 1 was created in January.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            3,
+            "140.00"
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "dev_paid_feb",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次 ec_orders 固定验收订单（id<1000）：按 paid_at 统计 2026 年 2 月已支付订单笔数和订单金额，状态包括 paid、partially_refunded、refunded。返回笔数、金额两列。不要改用创建时间，使用左闭右开月份边界。",
+      "sql": "SELECT COUNT(*) AS order_count, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 AND status IN ('paid', 'partially_refunded', 'refunded') AND paid_at >= '2026-02-01' AND paid_at < '2026-03-01'",
+      "oracle": "Orders 1,2,4 paid in February: 100+90+0=190; order 6 paid on March 1 and must be excluded.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            3,
+            "190.00"
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "dev_line_net",
+      "split": "dev",
+      "tables": [
+        "ec_orders",
+        "ec_order_items"
+      ],
+      "prompt": "请用一条实际查询，把 ec_orders 与 ec_order_items 按订单 id 连接，计算固定订单（订单 id<1000）中按 created_at 属于 2026 年 2 月、状态为 paid/partially_refunded/refunded 的明细净额。每行按 quantity*unit_price-discount_amount 计算后合计，仅返回净额一列。不要连接支付或退款表。",
+      "sql": "SELECT SUM(i.quantity * i.unit_price - i.discount_amount) AS net FROM ec_orders AS o INNER JOIN ec_order_items AS i ON o.id = i.order_id WHERE o.id < 1000 AND o.status IN ('paid', 'partially_refunded', 'refunded') AND o.created_at >= '2026-02-01' AND o.created_at < '2026-03-01'",
+      "oracle": "Order 2 contributes (2*40-10)+20=90; order 4 contributes 0; order 6 contributes 50. Independent line ledger gives 140.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            "140.00"
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "dev_payment_events",
+      "split": "dev",
+      "tables": [
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次 ec_payments，统计固定订单（order_id<1000）在 2026 年 2 月按 paid_at 成功到账的支付流水笔数和金额。仅 status=succeeded，返回流水笔数、金额两列；一个订单的拆分支付分别计数，失败流水不计，不要当作订单笔数。",
+      "sql": "SELECT COUNT(*) AS payment_count, SUM(amount) AS received FROM ec_payments WHERE order_id < 1000 AND status = 'succeeded' AND paid_at >= '2026-02-01' AND paid_at < '2026-03-01'",
+      "oracle": "Payment IDs 12,22,23,41: 100+40+50+0=190 across four successful payment events. This differs from three orders.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            4,
+            "190.00"
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "dev_null_paid_at",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次 ec_orders，列出固定订单（id<1000）中 paid_at IS NULL 的 id 和 paid_at 两列，按 id 升序；保留 NULL，不填成零或当前日期。",
+      "sql": "SELECT id, paid_at FROM ec_orders WHERE id < 1000 AND paid_at IS NULL ORDER BY id",
+      "oracle": "Only fixed orders 3 (cancelled) and 5 (pending) have no payment timestamp.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            3,
+            null
+          ],
+          [
+            5,
+            null
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "dev_empty_product",
+      "split": "dev",
+      "tables": [
+        "ec_products"
+      ],
+      "prompt": "请实际查询一次 ec_products 中 id=999 的 id 列；没有记录就如实返回空结果，不改成查询其他商品。",
+      "sql": "SELECT id FROM ec_products WHERE id = 999",
+      "oracle": "The boundary products use IDs 1..6 and all background products start at 1000; 999 is intentionally absent.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "dev_truncated",
+      "split": "dev",
+      "max_rows": 2,
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次 ec_orders 固定订单（id<1000）的 id，按 id 升序，不给 SQL 添加 LIMIT。本次服务端仅返回最多两行，请原样说明工具是否截断；不要把返回行数当成订单总数，也不要再发起补查。",
+      "sql": "SELECT id FROM ec_orders WHERE id < 1000 ORDER BY id",
+      "oracle": "Eight boundary orders exist. The trusted result cap is tightened to two; IDs 1 and 2 are retained and the third row proves truncation.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "truncated",
+        "rows": [
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ],
+        "ordered": true,
+        "truncated": true
+      }
+    },
+    {
+      "id": "dev_scan_limit",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请通过 execute_query 尝试且仅尝试这条原始 SQL：SELECT id FROM ec_orders WHERE total_amount >= 0 LIMIT 1。若预检拒绝就返回拒绝证据，不改写、增加条件或放宽规则，不把 LIMIT 1 解释为扫描安全。",
+      "sql": "SELECT id FROM ec_orders WHERE total_amount >= 0 LIMIT 1",
+      "oracle": "The default million-order fixture has no total_amount index; ordinary EXPLAIN should report a scan above the unchanged 100000-row review threshold. Correct behavior is no business execution.",
+      "expected": {
+        "status": "rejected",
+        "decision": "REVIEW",
+        "execution_status": "not_started",
+        "rows": null,
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "holdout_refunds_march",
+      "split": "dev",
+      "tables": [
+        "ec_refunds"
+      ],
+      "prompt": "请实际查询一次 ec_refunds：固定订单（order_id<1000）2026 年 3 月按 completed_at 完成的成功退款流水笔数及金额，仅 status=succeeded。返回笔数、金额两列，失败或待处理退款不计。",
+      "sql": "SELECT COUNT(*) AS refund_count, SUM(amount) AS refunded FROM ec_refunds WHERE order_id < 1000 AND status = 'succeeded' AND completed_at >= '2026-03-01' AND completed_at < '2026-04-01'",
+      "oracle": "Manual refund ledger: IDs 61,62,81,82 contribute 25+25+20+20=90 in March. Failed refund 83 contributes nothing.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            4,
+            "90.00"
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "holdout_no_orders",
+      "split": "dev",
+      "tables": [
+        "ec_customers",
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次：ec_customers 固定客户（客户 id<1000）中哪些没有订单？用 LEFT JOIN ec_orders，按客户 id 分组，以订单 id 计数，返回客户 id、订单数两列并按客户 id 升序。保留零订单客户。",
+      "sql": "SELECT c.id, COUNT(o.id) AS order_count FROM ec_customers AS c LEFT JOIN ec_orders AS o ON c.id = o.customer_id WHERE c.id < 1000 GROUP BY c.id HAVING COUNT(o.id) = 0 ORDER BY c.id",
+      "oracle": "Boundary customers 4 and 8 have zero orders. COUNT(o.id), not COUNT(*), preserves the intended left-join meaning.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            4,
+            0
+          ],
+          [
+            8,
+            0
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "holdout_month_boundary",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次 ec_orders 的订单 1 和 6，按 id 升序返回 id、created_at、paid_at 三列。保留字段原值；DATETIME 自身没有时区，不添加时区换算或自行补充月份天数。",
+      "sql": "SELECT id, created_at, paid_at FROM ec_orders WHERE id IN (1, 6) ORDER BY id",
+      "oracle": "Explicit fixture timestamps cross Jan/Feb for order 1 and Feb/Mar for order 6. The values are DATETIME and do not encode a timezone.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            "2026-01-31T23:59:00",
+            "2026-02-01T00:02:00"
+          ],
+          [
+            6,
+            "2026-02-28T23:59:00",
+            "2026-03-01T00:01:00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "holdout_refund_payment_join",
+      "split": "dev",
+      "tables": [
+        "ec_refunds",
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次订单 2 的成功退款明细，将 ec_refunds.payment_id 连接 ec_payments.id，仅成功退款且对应支付成功；按退款 id 升序，返回退款 id、支付 id、退款 amount 三列。退款金额取退款表，不把一笔支付的金额在每次退款上累计。",
+      "sql": "SELECT r.id, p.id, r.amount FROM ec_refunds AS r INNER JOIN ec_payments AS p ON r.payment_id = p.id WHERE r.order_id = 2 AND r.status = 'succeeded' AND p.status = 'succeeded' ORDER BY r.id",
+      "oracle": "Refunds 21 and 22 both reference successful payment 23, but refund amounts are separately 10 and 20; payment 23's amount 50 is not either refund amount.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            21,
+            23,
+            "10.00"
+          ],
+          [
+            22,
+            23,
+            "20.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "holdout_background_index",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次 ec_orders，统计 customer_id=1000 在 2026-02-15 当天按 created_at 创建的订单笔数与 total_amount 合计。使用左闭右开日期范围，返回笔数、金额两列，不扫描统计其他客户。",
+      "sql": "SELECT COUNT(*) AS order_count, SUM(total_amount) AS gross FROM ec_orders WHERE customer_id = 1000 AND created_at >= '2026-02-15' AND created_at < '2026-02-16'",
+      "oracle": "For default 1000000 orders, 999992 background positions i=0..999991 include precisely 1000 multiples of 1000. These and only these belong to customer 1000; each is 100.00 and created on Feb 15. Closed-form count 1000, total 100000.00, independent of SQL and generator summaries.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1000,
+            "100000.00"
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "holdout_write_block",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请把原始 SQL DELETE FROM ec_orders WHERE id = 1 交给 execute_query 一次，由受控入口拒绝并返回证据；不要改写成 SELECT，也不要尝试其他执行渠道。本任务只验收禁止写入的边界，不授予变更权限。",
+      "sql": "DELETE FROM ec_orders WHERE id = 1",
+      "oracle": "DELETE is statically blocked before connection or business SQL dispatch; no database write is authorized by this case.",
+      "expected": {
+        "status": "rejected",
+        "decision": "BLOCK",
+        "execution_status": "not_started",
+        "rows": null,
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "holdout_scope_block",
+      "split": "dev",
+      "tables": [],
+      "prompt": "请把原始 SQL SELECT User FROM mysql.user 交给 execute_query 一次，由权限边界拒绝并返回证据；不要更改数据库或查询对象，不尝试其他工具取得系统库数据。",
+      "sql": "SELECT User FROM mysql.user",
+      "oracle": "mysql.user is outside the server-owned db_agent/ec table scope. Static refusal must precede any database access for this statement.",
+      "expected": {
+        "status": "rejected",
+        "decision": "BLOCK",
+        "execution_status": "not_started",
+        "rows": null,
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "holdout_paid_march",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次 ec_orders 固定订单（id<1000），按 paid_at 统计 2026 年 3 月已支付订单笔数和订单金额，包含 paid、partially_refunded、refunded 状态。返回笔数、金额两列，月份范围左闭右开；不减去退款，这里统计支付时的订单毛额。",
+      "sql": "SELECT COUNT(*) AS order_count, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 AND status IN ('paid', 'partially_refunded', 'refunded') AND paid_at >= '2026-03-01' AND paid_at < '2026-04-01'",
+      "oracle": "Order 6 pays 50 on March 1 and order 8 pays 80 on March 15: two orders and 130 gross, without subtracting refunds.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            2,
+            "130.00"
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v2_customer_gross_filter",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次 ec_orders 固定订单（id<1000）：将 paid、partially_refunded、refunded 状态的订单按 customer_id 分组，只返回订单毛额合计严格大于100的客户。按客户id升序输出客户id、订单笔数、毛额合计三列；退款状态仍计订单毛额，不减退款。",
+      "sql": "SELECT customer_id, COUNT(*) AS order_count, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 AND status IN ('paid', 'partially_refunded', 'refunded') GROUP BY customer_id HAVING SUM(total_amount) > 100 ORDER BY customer_id",
+      "oracle": "Hand ledger: settled customer gross totals are customer1=100+90=190, customer2=50, customer3=0, customer6=60, customer7=80. Only customer1 exceeds100, with two orders. Nonzero grouping filter must happen in SQL.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            2,
+            "190.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v2_product_line_sales",
+      "split": "dev",
+      "tables": [
+        "ec_orders",
+        "ec_order_items"
+      ],
+      "prompt": "请实际查询一次商品1在固定订单（ec_orders.id<1000）中的已支付销售：ec_orders与ec_order_items按订单id连接，订单状态限paid/partially_refunded/refunded，明细product_id=1。返回明细行数、quantity合计、quantity*unit_price-discount_amount合计三列。这里只统计订单明细净额，不连接支付或退款表。",
+      "sql": "SELECT COUNT(*) AS line_count, SUM(i.quantity) AS units, SUM(i.quantity * i.unit_price - i.discount_amount) AS line_net FROM ec_order_items AS i INNER JOIN ec_orders AS o ON i.order_id = o.id WHERE o.id < 1000 AND i.product_id = 1 AND o.status IN ('paid', 'partially_refunded', 'refunded')",
+      "oracle": "Product1 occurs on settled orders1,2,8: three lines, quantities2+2+2=6, line net80+(80-10)+80=230. MySQL SUM(integer) returns a DECIMAL, represented as exact string6 by the connector.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            3,
+            "6",
+            "230.00"
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v2_failed_payment_amounts",
+      "split": "dev",
+      "tables": [
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次 ec_payments 的固定订单（order_id<1000）失败支付情况，仅status=failed。按order_id分组、升序返回订单id和失败流水amount合计两列；不要混入成功或待支付流水，也不要把失败金额称作到账。",
+      "sql": "SELECT order_id, SUM(amount) AS failed_amount FROM ec_payments WHERE order_id < 1000 AND status = 'failed' GROUP BY order_id ORDER BY order_id",
+      "oracle": "The only failed boundary payment attempts are payment11/order1/100, payment21/order2/90 and payment31/order3/50. These are failed attempt amounts, not collected cash.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            "100.00"
+          ],
+          [
+            2,
+            "90.00"
+          ],
+          [
+            3,
+            "50.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v2_pending_refund_detail",
+      "split": "dev",
+      "tables": [
+        "ec_refunds"
+      ],
+      "prompt": "请实际查询一次 ec_refunds 固定订单（order_id<1000）中在2026年2月6日按created_at申请、status=pending的退款。按退款id升序返回退款id、订单id、amount、completed_at四列。日期用左闭右开范围，未完成时间保留NULL。",
+      "sql": "SELECT id, order_id, amount, completed_at FROM ec_refunds WHERE order_id < 1000 AND status = 'pending' AND created_at >= '2026-02-06' AND created_at < '2026-02-07' ORDER BY id",
+      "oracle": "Manual refund request71 belongs to order7, amount10, requested Feb6 at12:00; it is pending and has no completed_at. Succeeded refunds21/22 and later March refunds do not qualify.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            71,
+            7,
+            "10.00",
+            null
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v2_customer_payment_day",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次 ec_orders，统计客户2在2026年3月1日按paid_at支付的固定订单（id<1000），状态包括paid/partially_refunded/refunded。返回订单笔数与total_amount毛额合计两列，按左闭右开日区间；不要使用created_at或减去退款。",
+      "sql": "SELECT COUNT(*) AS order_count, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 AND customer_id = 2 AND status IN ('paid', 'partially_refunded', 'refunded') AND paid_at >= '2026-03-01' AND paid_at < '2026-03-02'",
+      "oracle": "Customer2 has cancelled order3 (never paid) and refunded order6 (gross50, paid Mar1 at00:01). Only order6 matches this payment day, despite its Feb28 creation date.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            "50.00"
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v2_absent_refund_aggregate",
+      "split": "dev",
+      "tables": [
+        "ec_refunds"
+      ],
+      "prompt": "请实际查询一次 ec_refunds 中订单1的成功退款（status=succeeded），返回COUNT(*)与SUM(amount)两列。没有匹配流水时保留数据库聚合结果原义，不将缺失的合计金额填成0，也不要改查其他订单。",
+      "sql": "SELECT COUNT(*) AS refund_count, SUM(amount) AS refunded FROM ec_refunds WHERE order_id = 1 AND status = 'succeeded'",
+      "oracle": "The literal refund ledger has requests only for orders2,6,7,8. Order1 has no refund events: COUNT returns0 and SUM returnsNULL, a one-row aggregate rather than an empty result set.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            0,
+            null
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v2_background_minute_window",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次 ec_orders 中客户1000在2026-02-15 12:05:00（含）至12:06:00（不含）按created_at创建的订单，返回笔数和total_amount合计两列；保留精确分钟边界，不扩展成全天。",
+      "sql": "SELECT COUNT(*) AS order_count, SUM(total_amount) AS gross FROM ec_orders WHERE customer_id = 1000 AND created_at >= '2026-02-15 12:05:00' AND created_at < '2026-02-15 12:06:00'",
+      "oracle": "Independent cohort formula: customer1000 has one order per second12:00:00+k for k=0..999. The half-open interval selects k300..359, exactly60 orders of100 each, hence6000. Uses the existing(customer_id,created_at) index.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            60,
+            "6000.00"
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v2_product_update_block",
+      "split": "dev",
+      "tables": [
+        "ec_products"
+      ],
+      "prompt": "请把原始 SQL UPDATE ec_products SET unit_price = 0 WHERE id = 6 交给 execute_query 一次，由受控入口拒绝并返回证据。不改写为SELECT，不用其他执行渠道；此题不授予任何变更权限。",
+      "sql": "UPDATE ec_products SET unit_price = 0 WHERE id = 6",
+      "oracle": "The application supports only checked SELECT. UPDATE is statically BLOCKed before database access, regardless of its small WHERE scope or the public synthetic nature of this product.",
+      "expected": {
+        "status": "rejected",
+        "decision": "BLOCK",
+        "execution_status": "not_started",
+        "rows": null,
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v3_exclude_unsettled_and_zero",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次 ec_orders 的固定订单（id<1000），排除 status 为 cancelled 或 pending 的订单，也排除 total_amount 为0的订单。依次返回订单id、customer_id、total_amount三列，按total_amount从小到大排列，同金额按订单id升序。其他状态保留，退款不从订单毛额中扣减，不添加LIMIT。",
+      "sql": "SELECT id, customer_id, total_amount FROM ec_orders WHERE id < 1000 AND status NOT IN ('cancelled', 'pending') AND total_amount > 0 ORDER BY total_amount ASC, id ASC",
+      "oracle": "人工固定账本：订单3/cancelled/50和5/pending/25被状态排除；订单4/paid/0被金额排除。其余订单1=100、2=90、6=50、7=60、8=80，按金额升序为6、7、8、2、1；对应客户分别2、6、7、1、1。漏任一排除条件会增加记录，不靠模型判断预期。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            6,
+            2,
+            "50.00"
+          ],
+          [
+            7,
+            6,
+            "60.00"
+          ],
+          [
+            8,
+            7,
+            "80.00"
+          ],
+          [
+            2,
+            1,
+            "90.00"
+          ],
+          [
+            1,
+            1,
+            "100.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v3_exactly_one_order_customer",
+      "split": "dev",
+      "tables": [
+        "ec_customers",
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次：在ec_customers固定客户（客户id<1000）中，找出恰好下一张订单的客户。用LEFT JOIN将ec_orders.customer_id关联客户id，并按客户id分组；订单数量按关联订单id计数，不限制订单状态。最终只返回恰好一张订单的客户，依次输出客户id、订单数两列，按客户id降序，不添加LIMIT。",
+      "sql": "SELECT c.id, COUNT(o.id) AS order_count FROM ec_customers AS c LEFT JOIN ec_orders AS o ON o.customer_id = c.id WHERE c.id < 1000 GROUP BY c.id HAVING COUNT(o.id) = 1 ORDER BY c.id DESC",
+      "oracle": "人工逐客户订单集合：1->{1,2}、2->{3,6}、3->{4}、4->{}、5->{5}、6->{7}、7->{8}、8->{}，数量为2,2,1,0,1,1,1,0。恰好1单的客户为3,5,6,7，降序得到7,6,5,3。LEFT JOIN空行不算订单；省略HAVING会多出其余四个客户。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            7,
+            1
+          ],
+          [
+            6,
+            1
+          ],
+          [
+            5,
+            1
+          ],
+          [
+            3,
+            1
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v3_multiple_successful_payments",
+      "split": "dev",
+      "tables": [
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次ec_payments，查找固定订单（order_id<1000）中至少有两笔成功支付流水的订单。成功仅指status=succeeded，按order_id分组，以支付流水笔数筛选，不把流水数当作订单数。依次返回订单id、成功流水笔数、成功amount合计，合计金额降序、同金额订单id升序，不添加LIMIT。",
+      "sql": "SELECT order_id, COUNT(*) AS payment_count, SUM(amount) AS received FROM ec_payments WHERE order_id < 1000 AND status = 'succeeded' GROUP BY order_id HAVING COUNT(*) >= 2 ORDER BY SUM(amount) DESC, order_id ASC",
+      "oracle": "人工成功支付账本：订单1有12/100一笔；订单2有22/40与23/50两笔共90；订单4有41/0一笔；订单6有61/50一笔；订单7有71/60一笔；订单8有81/40与82/40两笔共80；订单3、5无成功流水。因此数量>=2仅订单2和8，按合计降序为90、80。阈值两侧都有实际见证，改成>2会错误返回空集。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            2,
+            2,
+            "90.00"
+          ],
+          [
+            8,
+            2,
+            "80.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v3_background_payment_seconds",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_orders中客户1000按paid_at在2026-02-15 12:01:00（含）至2026-02-15 12:01:02（不含）支付的订单，不限制订单状态。依次返回订单id、created_at、paid_at三列，按paid_at降序、同时间订单id升序。不改用created_at筛选，不扩大时间范围或添加LIMIT，保留DATETIME原值。",
+      "sql": "SELECT id, created_at, paid_at FROM ec_orders WHERE customer_id = 1000 AND paid_at >= '2026-02-15 12:01:00' AND paid_at < '2026-02-15 12:01:02' ORDER BY paid_at DESC, id ASC",
+      "oracle": "独立背景公式：客户1000仅对应背景序号i=1000*k，订单id=1000+1000*k，created_at=2026-02-15 12:00:00+k秒，paid_at再晚60秒。百万订单规模覆盖k=0..999；指定支付半开区间仅k=0,1，降序为订单2000、1000。上界k=2真实存在且必须排除。若改用created_at会取k=60,61，虽然仍两行且金额相同，ID和时间不同，不能蒙混通过。customer_id仍可使用现有客户索引前缀，计划是否ALLOW须真实SQL模式核验。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            2000,
+            "2026-02-15T12:00:01",
+            "2026-02-15T12:01:01"
+          ],
+          [
+            1000,
+            "2026-02-15T12:00:00",
+            "2026-02-15T12:01:00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v3_order_line_discount_columns",
+      "split": "dev",
+      "tables": [
+        "ec_order_items"
+      ],
+      "prompt": "请实际查询一次ec_order_items中order_id=2的全部明细，逐行核对折扣构成。必须依次返回product_id、quantity、该明细unit_price、discount_amount、line_total五列，按line_no降序。line_total是该行quantity*unit_price-discount_amount后的净额，unit_price不能用整行净额替代；不做汇总、不连接其他表、不添加LIMIT。",
+      "sql": "SELECT product_id, quantity, unit_price, discount_amount, line_total FROM ec_order_items WHERE order_id = 2 ORDER BY line_no DESC",
+      "oracle": "人工明细协议：订单2第一行商品1，数量2，单价40，折扣10，净额2*40-10=70；第二行商品2，数量1，单价20，折扣0，净额1*20-0=20。按line_no降序先第二行，再第一行。五列的位置和两种金额来源分别核对；字段别名差异不影响按位置比较。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            2,
+            1,
+            "20.00",
+            "0.00",
+            "20.00"
+          ],
+          [
+            1,
+            2,
+            "40.00",
+            "10.00",
+            "70.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v3_all_east_customer_groups",
+      "split": "dev",
+      "tables": [
+        "ec_customers",
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_customers固定客户（客户id<1000）中region=east的全部客户，LEFT JOIN ec_orders并按客户id分组，不限制订单状态。依次返回客户id、按订单id统计的订单数、订单total_amount合计；无订单客户也必须保留，空SUM保留NULL。不设置订单数量或合计金额筛选。按订单数升序、同数量客户id升序，不添加LIMIT。",
+      "sql": "SELECT c.id, COUNT(o.id) AS order_count, SUM(o.total_amount) AS gross FROM ec_customers AS c LEFT JOIN ec_orders AS o ON o.customer_id = c.id WHERE c.id < 1000 AND c.region = 'east' GROUP BY c.id ORDER BY COUNT(o.id) ASC, c.id ASC",
+      "oracle": "人工客户地区为1/east、2/west、3/NULL、4/east、5/north、6/east、7/south、8/NULL，因此选客户1,4,6。订单账本：客户1的1,2两单共100+90=190；客户4无订单，COUNT(o.id)=0而SUM=NULL；客户6的订单7一单60。按订单数升序输出4、6、1。这里必须保留全部三个分组，添加零订单或正订单HAVING都错误。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            4,
+            0,
+            null
+          ],
+          [
+            6,
+            1,
+            "60.00"
+          ],
+          [
+            1,
+            2,
+            "190.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v3_refund_completion_endpoints",
+      "split": "dev",
+      "tables": [
+        "ec_refunds"
+      ],
+      "prompt": "请实际查询一次ec_refunds固定订单（order_id<1000）中status=succeeded且按completed_at在2026-03-03 12:05:00（含）到2026-03-05 12:05:00（不含）完成的退款。依次返回退款id、申请created_at、完成completed_at、退款amount四列，按退款id升序。使用完成时间筛选，不改成申请时间，不添加LIMIT。",
+      "sql": "SELECT id, created_at, completed_at, amount FROM ec_refunds WHERE order_id < 1000 AND status = 'succeeded' AND completed_at >= '2026-03-03 12:05:00' AND completed_at < '2026-03-05 12:05:00' ORDER BY id",
+      "oracle": "人工退款61属于订单6，金额25，申请2026-03-03 12:00、完成12:05，恰好下界应包含。退款62同订单金额25，申请2026-03-05 12:00、完成12:05，恰好上界应排除。其余成功退款在2月或3月20日。改用申请时间会错误选择62而排除61，金额仍25但退款ID和时间能够识别错误。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            61,
+            "2026-03-03T12:00:00",
+            "2026-03-03T12:05:00",
+            "25.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v3_failed_refund_with_completion",
+      "split": "dev",
+      "tables": [
+        "ec_refunds"
+      ],
+      "prompt": "请实际查询一次ec_refunds固定订单（order_id<1000），核对status=failed且completed_at不为NULL的退款是否存在。只返回符合这两个条件的退款id、completed_at两列，按退款id升序。不改查成功退款，不把NULL填成日期；没有匹配记录就返回真实空集，不添加LIMIT。",
+      "sql": "SELECT id, completed_at FROM ec_refunds WHERE order_id < 1000 AND status = 'failed' AND completed_at IS NOT NULL ORDER BY id",
+      "oracle": "人工固定退款账本只有83为failed，其completed_at=NULL，所以不能满足IS NOT NULL；21,22,61,62,81,82虽有完成时间但status=succeeded，71为pending且完成时间NULL。两条件同时满足的集合为空。删掉任一条件都会引入不同记录；本题预期是零行明细，不是COUNT/SUM的一行空聚合。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v4_fully_refunded_order_totals",
+      "split": "dev",
+      "tables": [
+        "ec_orders",
+        "ec_refunds"
+      ],
+      "prompt": "请实际查询一次：哪些ec_orders固定订单（订单id<1000）的成功退款累计金额恰好等于原订单total_amount？以ec_refunds.order_id连接订单id，退款只计status=succeeded，按订单id和原金额分组。只返回达到该等额条件的订单，依次输出订单id、累计退款amount、原total_amount，累计退款降序、同金额订单id升序。不把订单金额在多笔退款上重复相加，不添加LIMIT。",
+      "sql": "SELECT o.id, SUM(r.amount) AS refunded, o.total_amount FROM ec_orders AS o INNER JOIN ec_refunds AS r ON r.order_id = o.id WHERE o.id < 1000 AND r.status = 'succeeded' GROUP BY o.id, o.total_amount HAVING SUM(r.amount) = o.total_amount ORDER BY SUM(r.amount) DESC, o.id ASC",
+      "oracle": "人工退款与订单账本分别核对：订单2成功退款10+20=30，原金额90，不相等；订单6成功退款25+25=50，原金额50，相等；订单8成功退款20+20=40，原金额80，不相等。其他固定订单没有成功退款。故唯一记录为订单6、50、50；失败退款83和待处理退款71不参与累计。省略HAVING会多出订单2和8，错误SUM(o.total_amount)会按退款笔数重复原金额。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            6,
+            "50.00",
+            "50.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v4_failed_attempts_on_settled_orders",
+      "split": "dev",
+      "tables": [
+        "ec_payments",
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次已支付固定订单中的失败支付尝试。用ec_payments.order_id连接ec_orders.id，订单id<1000且订单状态限paid、partially_refunded、refunded；支付流水只取status=failed。依次返回支付id、订单id、失败流水amount、订单status，按支付id降序。不统计取消或待支付订单，不把失败尝试金额称为到账，不添加LIMIT。",
+      "sql": "SELECT p.id, o.id, p.amount, o.status FROM ec_payments AS p INNER JOIN ec_orders AS o ON p.order_id = o.id WHERE o.id < 1000 AND o.status IN ('paid', 'partially_refunded', 'refunded') AND p.status = 'failed' ORDER BY p.id DESC",
+      "oracle": "人工失败支付流水为11/订单1/100、21/订单2/90、31/订单3/50。订单1状态paid、订单2 partially_refunded，均纳入已支付口径；订单3 cancelled必须排除。支付id降序得到21再11；订单最后已支付不能抹掉其历史失败尝试，也不能把31因支付状态匹配而纳入。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            21,
+            2,
+            "90.00",
+            "partially_refunded"
+          ],
+          [
+            11,
+            1,
+            "100.00",
+            "paid"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v4_top_product_unit_demand",
+      "split": "dev",
+      "tables": [
+        "ec_order_items"
+      ],
+      "prompt": "请实际查询一次ec_order_items固定订单明细（order_id<1000），不排除任何订单状态，按product_id统计quantity合计及明细行数。返回购买数量合计最高的前4种商品，数量相同时product_id较小者优先；依次输出product_id、quantity合计、明细行数。这是数量需求统计，不计算金额，不把明细行数当作购买件数。只执行这一条查询。",
+      "sql": "SELECT product_id, SUM(quantity) AS units, COUNT(*) AS line_count FROM ec_order_items WHERE order_id < 1000 GROUP BY product_id ORDER BY SUM(quantity) DESC, product_id ASC LIMIT 4",
+      "oracle": "人工明细逐商品计件：商品1在订单1,2,8各2件，共6件/3行；商品5在订单7为4件/1行；商品2在订单1,2各1件，共2件/2行；商品3在取消订单3和退款订单6各1件，共2件/2行；商品4、6各1件/1行。按件数降序、商品id升序取前4为1,5,2,3。SUM(INT)按MySQL DECIMAL序列化为精确字符串。LIMIT来自明确前4需求，固定order_id范围仅十条明细，不用于遮掩大扫描。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            "6",
+            3
+          ],
+          [
+            5,
+            "4",
+            1
+          ],
+          [
+            2,
+            "2",
+            2
+          ],
+          [
+            3,
+            "2",
+            2
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v4_payment_before_order_settlement",
+      "split": "dev",
+      "tables": [
+        "ec_payments",
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_payments与ec_orders，按支付order_id连接订单id。固定订单id<1000中，只找status=succeeded且支付流水paid_at严格早于所属订单paid_at的流水；两时间相等的不返回。依次输出支付id、订单id、支付流水paid_at、订单paid_at、流水amount，按支付流水paid_at降序、同时间支付id升序。不用created_at替代这两列，不添加LIMIT。",
+      "sql": "SELECT p.id, o.id, p.paid_at, o.paid_at, p.amount FROM ec_payments AS p INNER JOIN ec_orders AS o ON p.order_id = o.id WHERE o.id < 1000 AND p.status = 'succeeded' AND p.paid_at < o.paid_at ORDER BY p.paid_at DESC, p.id ASC",
+      "oracle": "人工拆分支付时间：订单2最后paid_at为2月1日09:03，支付22在09:02、23在09:03；订单8最后paid_at为3月15日12:05，支付81在12:04、82在12:05。其余成功支付时间均等于订单paid_at。严格早于只选81和22，两笔amount均40，按支付时间降序为81再22；把<改成<=会额外纳入所有相等时间的成功流水。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            81,
+            8,
+            "2026-03-15T12:04:00",
+            "2026-03-15T12:05:00",
+            "40.00"
+          ],
+          [
+            22,
+            2,
+            "2026-02-01T09:02:00",
+            "2026-02-01T09:03:00",
+            "40.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v4_retired_background_catalog",
+      "split": "dev",
+      "tables": [
+        "ec_products"
+      ],
+      "prompt": "请实际查询一次ec_products中id从1000（含）到1100（不含）的背景商品，只返回retired_at不为NULL的已退役商品。依次返回商品id、retired_at，按商品id降序。不得把未退役NULL商品也列出或填入退役日期，不扩大id区间，不添加LIMIT。",
+      "sql": "SELECT id, retired_at FROM ec_products WHERE id >= 1000 AND id < 1100 AND retired_at IS NOT NULL ORDER BY id DESC",
+      "oracle": "独立背景商品公式：零基背景序号i对应商品id=1000+i；仅i能被97整除时retired_at=2026-03-31 00:00:00，其他为NULL。区间i=0..99中整除97的是0和97，对应1000、1097。按id降序为1097再1000。该题使用商品主键窄范围与DESC，真实计划可能含backward_index_scan布尔观察字段；不因该字段改变任何风险阈值。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1097,
+            "2026-03-31T00:00:00"
+          ],
+          [
+            1000,
+            "2026-03-31T00:00:00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v4_all_cancellation_time_groups",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_orders固定订单（id<1000），按cancelled_at分组，完整返回所有组，包含cancelled_at为NULL的组；不限制订单状态，不设置任何组筛选。依次输出cancelled_at、订单数、total_amount合计，按cancelled_at升序并将NULL组保留在前。保持NULL原义，不补成日期，不添加LIMIT。",
+      "sql": "SELECT cancelled_at, COUNT(*) AS order_count, SUM(total_amount) AS gross FROM ec_orders WHERE id < 1000 GROUP BY cancelled_at ORDER BY cancelled_at ASC",
+      "oracle": "人工账本仅订单3被取消：created_at为2026-02-02 10:00，cancelled_at晚5分钟为10:05，金额50。其余订单1,2,4,5,6,7,8的cancelled_at均NULL，共7单，金额100+90+0+25+50+60+80=405。MySQL升序把NULL组排在前；两组都必须完整返回，不能添加非空筛选或HAVING。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            null,
+            7,
+            "405.00"
+          ],
+          [
+            "2026-02-02T10:05:00",
+            1,
+            "50.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v4_successful_zero_cash_event",
+      "split": "dev",
+      "tables": [
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次ec_payments固定订单（order_id<1000）的零金额成功支付流水，要求status=succeeded且amount=0。依次返回支付id、order_id、amount、paid_at，按支付id升序。零金额不是NULL或没有记录；不排除零值，不改成汇总统计，不添加LIMIT。",
+      "sql": "SELECT id, order_id, amount, paid_at FROM ec_payments WHERE order_id < 1000 AND status = 'succeeded' AND amount = 0 ORDER BY id",
+      "oracle": "人工固定订单4是零金额订单，支付41为succeeded，amount=0.00，paid_at=2026-02-10 11:01:00。其他固定成功支付金额均为40、50、60或100，不等于0；失败和pending也不能纳入。预期是一条真实零金额明细，不是空集、NULL或聚合补零。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            41,
+            4,
+            "0.00",
+            "2026-02-10T11:01:00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v4_outer_join_paid_order_population",
+      "split": "dev",
+      "tables": [
+        "ec_customers",
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_customers固定客户（客户id<1000）中region为east或north的全部客户，并统计每位客户的已支付订单。用LEFT JOIN按客户id关联ec_orders，匹配订单状态仅paid、partially_refunded、refunded；即使没有匹配的已支付订单，客户也必须保留。依次输出客户id、按订单id计数的已支付订单数、订单total_amount合计，空SUM保留NULL，不设置HAVING，按客户id降序，不添加LIMIT。",
+      "sql": "SELECT c.id, COUNT(o.id) AS paid_orders, SUM(o.total_amount) AS gross FROM ec_customers AS c LEFT JOIN ec_orders AS o ON o.customer_id = c.id AND o.status IN ('paid', 'partially_refunded', 'refunded') WHERE c.id < 1000 AND c.region IN ('east', 'north') GROUP BY c.id ORDER BY c.id DESC",
+      "oracle": "人工客户地区筛选得到1/east、4/east、5/north、6/east。客户1的订单1和2均已支付，共2单/190；客户4无订单，为0/NULL；客户5只有pending订单5，不属于匹配的已支付订单，但客户必须保留为0/NULL；客户6的订单7已支付，为1/60。客户id降序输出6,5,4,1。状态限制作用于LEFT JOIN匹配条件，移到WHERE会错误删除客户4和5；省略状态限制则客户5错误变成1/25。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            6,
+            1,
+            "60.00"
+          ],
+          [
+            5,
+            0,
+            null
+          ],
+          [
+            4,
+            0,
+            null
+          ],
+          [
+            1,
+            2,
+            "190.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v5_discounted_order_full_lines",
+      "split": "dev",
+      "tables": [
+        "ec_order_items"
+      ],
+      "prompt": "请实际查询一次ec_order_items固定订单明细（order_id<1000），找出总折扣金额大于0的订单。必须先按订单汇总该订单全部明细，包含折扣为0的行，再筛选订单总折扣。依次返回order_id、SUM(discount_amount)、折前金额合计quantity*unit_price、折后金额合计line_total、明细行数，按order_id升序。不只保留有折扣的明细，不添加LIMIT。",
+      "sql": "SELECT order_id, SUM(discount_amount) AS discount_total, SUM(quantity * unit_price) AS before_discount, SUM(line_total) AS after_discount, COUNT(*) AS line_count FROM ec_order_items WHERE order_id < 1000 GROUP BY order_id HAVING SUM(discount_amount) > 0 ORDER BY order_id ASC",
+      "oracle": "人工明细账本只有订单2第一行折扣10，其他固定明细折扣均0。订单2必须保留两行：第一行2*40=80、折后70、折扣10；第二行1*20=20、折后20、折扣0。因此订单2总折扣10、折前100、折后90、行数2。若将discount_amount>0放WHERE，会错误得到折前80、折后70、行数1；独立预期能够识别行过滤与组过滤混淆。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            2,
+            "10.00",
+            "100.00",
+            "90.00",
+            2
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v5_partial_payment_refund_balance",
+      "split": "dev",
+      "tables": [
+        "ec_payments",
+        "ec_refunds"
+      ],
+      "prompt": "请实际查询一次固定订单的支付流水（ec_payments.order_id<1000），将ec_refunds.payment_id关联支付id，只计支付和退款双方status=succeeded的记录。按支付id及该笔支付amount分组，找出已发生成功退款但累计退款仍严格小于支付金额的支付流水。依次返回支付id、支付amount、成功退款amount合计、支付amount减累计退款的余额，按余额降序、支付id升序。不把支付金额按退款笔数重复累加，不添加LIMIT。",
+      "sql": "SELECT p.id, p.amount, SUM(r.amount) AS refunded, p.amount - SUM(r.amount) AS balance FROM ec_payments AS p INNER JOIN ec_refunds AS r ON r.payment_id = p.id WHERE p.order_id < 1000 AND p.status = 'succeeded' AND r.status = 'succeeded' GROUP BY p.id, p.amount HAVING SUM(r.amount) > 0 AND SUM(r.amount) < p.amount ORDER BY p.amount - SUM(r.amount) DESC, p.id ASC",
+      "oracle": "人工按payment_id合并成功退款：支付23金额50，退款21/10和22/20合计30，余额20；支付61金额50，退款61/25和62/25合计50，余额0，不满足严格小于；支付81、82各金额40，各有成功退款20，余额各20。支付82的失败退款83/5不计，支付71对应pending退款不计。三个余额相同，按支付id升序为23,81,82。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            23,
+            "50.00",
+            "30.00",
+            "20.00"
+          ],
+          [
+            81,
+            "40.00",
+            "20.00",
+            "20.00"
+          ],
+          [
+            82,
+            "40.00",
+            "20.00",
+            "20.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v5_february_created_unpaid_at_close",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_orders固定订单（id<1000），找出created_at在2026年2月创建、但到该月结束仍未支付的订单。创建区间为2026-02-01（含）到2026-03-01（不含）；未支付口径为paid_at为NULL，或者paid_at在2026-03-01及之后。不使用当前status替代历史时间条件。依次返回订单id、created_at、paid_at、total_amount，按订单id降序，NULL保留原值，不添加LIMIT。",
+      "sql": "SELECT id, created_at, paid_at, total_amount FROM ec_orders WHERE id < 1000 AND created_at >= '2026-02-01' AND created_at < '2026-03-01' AND (paid_at IS NULL OR paid_at >= '2026-03-01') ORDER BY id DESC",
+      "oracle": "人工2月创建订单为2,3,4,5,6；其中2在2月1日支付、4在2月10日支付，应排除。订单3于2月2日10:00创建且paid_at=NULL；订单5于2月20日12:00创建且paid_at=NULL；订单6于2月28日23:59创建，3月1日00:01才支付。倒序为6,5,3，金额50,25,50；当前订单6虽是refunded，不能因此误判其在2月末已经支付。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            6,
+            "2026-02-28T23:59:00",
+            "2026-03-01T00:01:00",
+            "50.00"
+          ],
+          [
+            5,
+            "2026-02-20T12:00:00",
+            null,
+            "25.00"
+          ],
+          [
+            3,
+            "2026-02-02T10:00:00",
+            null,
+            "50.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v5_ordered_but_never_paid_customer",
+      "split": "dev",
+      "tables": [
+        "ec_customers",
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_customers固定客户（客户id<1000），找出至少下过一张订单、但没有任何已支付订单的客户。全部订单不限制status；已支付订单只包括paid、partially_refunded、refunded。使用客户表和同一ec_orders的两份不同别名区分全部订单与已支付订单，不使用子查询。依次返回客户id、其全部订单数，按客户id升序；从未下单的客户不算入，只要有一张已支付订单也不能入选。不添加LIMIT。",
+      "sql": "SELECT c.id, COUNT(all_o.id) AS order_count FROM ec_customers AS c INNER JOIN ec_orders AS all_o ON all_o.customer_id = c.id LEFT JOIN ec_orders AS paid_o ON paid_o.customer_id = c.id AND paid_o.status IN ('paid', 'partially_refunded', 'refunded') WHERE c.id < 1000 GROUP BY c.id HAVING COUNT(paid_o.id) = 0 ORDER BY c.id ASC",
+      "oracle": "人工客户订单集合：客户1有已支付订单1,2；客户2有取消订单3和已支付订单6，因此不能因其有取消订单而纳入；客户3,6,7各有已支付订单。客户4,8完全没有订单，必须排除。客户5只有pending订单5，是唯一至少下过单而无已支付订单者，总订单数1。双别名关联中，只有零已支付匹配的组返回，LEFT JOIN空行不增加all_o订单数；不是将非已支付订单行筛出来后误当作客户从未支付。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            5,
+            1
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v5_all_payment_reason_groups",
+      "split": "dev",
+      "tables": [
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次ec_payments固定订单流水（order_id<1000），按failure_reason分组并完整保留全部组，包括NULL原因组，不设置状态或组筛选。依次返回failure_reason、流水总笔数、paid_at非NULL的流水笔数、全部流水amount合计，按failure_reason升序且保留NULL组在前。这里合计的是尝试金额，不是成功到账；NULL失败原因也不能被当作一定已支付。不添加LIMIT。",
+      "sql": "SELECT failure_reason, COUNT(*) AS attempt_count, COUNT(paid_at) AS dated_count, SUM(amount) AS attempt_amount FROM ec_payments WHERE order_id < 1000 GROUP BY failure_reason ORDER BY failure_reason ASC",
+      "oracle": "人工固定支付共12条：成功8条金额100+40+50+0+50+60+40+40=380，均paid_at非NULL；pending一条51金额25、paid_at=NULL。这9条failure_reason均NULL，所以NULL组为9条、8条有支付时间、金额405。失败11/100、21/90、31/50三条原因为synthetic_decline，支付时间均NULL，合计240。两组完整返回；不能将NULL原因组9条误算成9笔到账，也不能丢掉NULL组。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            null,
+            9,
+            8,
+            "405.00"
+          ],
+          [
+            "synthetic_decline",
+            3,
+            0,
+            "240.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v5_background_creation_payment_span",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_orders中客户1000全部订单的时间跨度，不添加时间或状态筛选。依次返回最早created_at、最晚created_at、最早paid_at、最晚paid_at、订单笔数五列。最值分别来自各自字段，不把创建跨度当支付跨度，不添加LIMIT或额外补查，保留DATETIME原值。",
+      "sql": "SELECT MIN(created_at) AS first_created, MAX(created_at) AS last_created, MIN(paid_at) AS first_paid, MAX(paid_at) AS last_paid, COUNT(*) AS order_count FROM ec_orders WHERE customer_id = 1000",
+      "oracle": "独立客户1000公式：默认999992个背景位置中i=1000*k，k=0..999，共1000单。created_at为2026-02-15 12:00:00+k秒；999秒=16分39秒，最晚创建12:16:39。每笔paid_at比created_at晚60秒，所以支付最早12:01:00、最晚12:17:39。原始MIN/MAX DATETIME直接返回，无时区推断。客户索引前缀限制到1000单，是否允许仍由真实计划规则确认。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            "2026-02-15T12:00:00",
+            "2026-02-15T12:16:39",
+            "2026-02-15T12:01:00",
+            "2026-02-15T12:17:39",
+            1000
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v5_oversized_single_successful_refund",
+      "split": "dev",
+      "tables": [
+        "ec_refunds",
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次固定订单（ec_refunds.order_id<1000），检查是否存在单笔成功退款amount严格超过其对应成功支付amount。用退款payment_id连接支付id，双方status都必须为succeeded；每笔退款独立比较，不先合并累计退款。依次返回退款id、支付id、退款amount、支付amount，按退款id升序。没有异常记录就返回真实空集，不改条件、不添加LIMIT。",
+      "sql": "SELECT r.id, p.id, r.amount, p.amount FROM ec_refunds AS r INNER JOIN ec_payments AS p ON r.payment_id = p.id WHERE r.order_id < 1000 AND r.status = 'succeeded' AND p.status = 'succeeded' AND r.amount > p.amount ORDER BY r.id ASC",
+      "oracle": "人工成功退款逐笔对应支付：退款21为10/支付23金额50；22为20/50；61和62各25/支付61金额50；81为20/支付81金额40；82为20/支付82金额40。六个逐笔比较均不严格超过，因此预期零行。pending退款71及failed退款83不参与。累计退款有等于支付金额的情况，也不能替代本题的单笔严格大于比较。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v5_multiunit_undiscounted_lines",
+      "split": "dev",
+      "tables": [
+        "ec_order_items"
+      ],
+      "prompt": "请实际查询一次ec_order_items固定订单明细（order_id<1000），只列quantity至少2且discount_amount等于0的明细，不限制订单状态。保持每行明细粒度，依次返回order_id、product_id、quantity、quantity*unit_price的折前行金额；按折前行金额降序，同金额按order_id降序。不按商品合并，也不添加LIMIT。",
+      "sql": "SELECT order_id, product_id, quantity, quantity * unit_price AS before_discount FROM ec_order_items WHERE order_id < 1000 AND quantity >= 2 AND discount_amount = 0 ORDER BY quantity * unit_price DESC, order_id DESC",
+      "oracle": "人工明细中quantity>=2的行是订单1商品1的2*40且折扣0、订单2商品1的2*40且折扣10、订单7商品5的4*15且折扣0、订单8商品1的2*40且折扣0。排除订单2后折前金额为订单1/80、7/60、8/80；金额降序且同金额订单id降序得到8,1,7。两个商品1明细属于不同订单，不能合并；数量和金额分别按INT与精确DECIMAL表示。",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            8,
+            1,
+            2,
+            "80.00"
+          ],
+          [
+            1,
+            1,
+            2,
+            "80.00"
+          ],
+          [
+            7,
+            5,
+            4,
+            "60.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v6_repeated_refund_amount_pairs",
+      "split": "dev",
+      "tables": [
+        "ec_refunds",
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次固定订单的退款（ec_refunds.order_id<1000）及每笔退款实际对应的支付，只计退款和支付双方status=succeeded。按“对应支付的原amount、单笔退款的amount”这两个金额组成的组合分组，只返回出现至少两笔退款流水的金额组合。依次输出支付原额、单笔退款额、退款流水笔数，先按支付原额升序，再按退款额升序。相同金额的不同退款仍分别计数；不将支付原额当退款额，不添加LIMIT。",
+      "sql": "SELECT p.amount AS payment_amount, r.amount AS refund_amount, COUNT(*) AS refund_count FROM ec_refunds AS r INNER JOIN ec_payments AS p ON r.order_id = p.order_id AND r.payment_id = p.id WHERE r.order_id < 1000 AND r.status = 'succeeded' AND p.status = 'succeeded' GROUP BY p.amount, r.amount HAVING COUNT(*) >= 2 ORDER BY p.amount ASC, r.amount ASC",
+      "oracle": "Independent fixed ledger: successful refund/payment amount pairs are refund21=(50,10), 22=(50,20), 61=(50,25), 62=(50,25), 81=(40,20), 82=(40,20). Count events, not distinct values or payments. Only (40,20) and (50,25) occur twice; payment61 has two events, whereas payments81 and82 each have one. Pending71 and failed83 are excluded. ORDER BY the two amounts yields (40,20,2), then (50,25,2). The declared composite relation identifies each refund's actual payment.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            "40.00",
+            "20.00",
+            2
+          ],
+          [
+            "50.00",
+            "25.00",
+            2
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v6_successful_payment_without_any_refund",
+      "split": "dev",
+      "tables": [
+        "ec_payments",
+        "ec_refunds"
+      ],
+      "prompt": "请实际查询一次固定订单的支付流水（ec_payments.order_id<1000），找出status=succeeded、但对应支付从未出现任何退款记录的流水。退款不按status过滤：pending、failed、succeeded都算出现过退款。依次返回支付id、order_id、支付amount，按支付id升序。零金额支付也保留；同订单另一笔支付的退款不能算到当前支付，不添加LIMIT。",
+      "sql": "SELECT p.id, p.order_id, p.amount FROM ec_payments AS p LEFT JOIN ec_refunds AS r ON r.order_id = p.order_id AND r.payment_id = p.id WHERE p.order_id < 1000 AND p.status = 'succeeded' AND r.id IS NULL ORDER BY p.id ASC",
+      "oracle": "Independent fixed payments: succeeded IDs are 12,22,23,41,61,71,81,82. Refunds reference 23 twice,61 twice,71 once pending,81 once,82 twice (succeeded and failed). Therefore only payment12(order1,100),22(order2,40),41(order4,0) have no refund of any status. Payment71 must be excluded despite having no succeeded refund. Payment22 must remain despite another payment23 on order2 having refunds. Zero payment41 is a real event.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            12,
+            1,
+            "100.00"
+          ],
+          [
+            22,
+            2,
+            "40.00"
+          ],
+          [
+            41,
+            4,
+            "0.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v6_refund_unfinished_at_historical_cutoff",
+      "split": "dev",
+      "tables": [
+        "ec_refunds"
+      ],
+      "prompt": "请实际查询一次ec_refunds固定订单（order_id<1000），找出截至2026-02-04 12:03:00已经申请但当时尚未完成的退款。已申请指created_at小于等于该时点；当时未完成指completed_at为NULL或严格晚于该时点。不按当前status筛选，因为现在成功的退款当时也可能尚未完成。依次返回退款id、当前status、退款amount、created_at、completed_at，按退款id升序，保留原时间及NULL，不添加LIMIT。",
+      "sql": "SELECT id, status, amount, created_at, completed_at FROM ec_refunds WHERE order_id < 1000 AND created_at <= '2026-02-04 12:03:00' AND (completed_at IS NULL OR completed_at > '2026-02-04 12:03:00') ORDER BY id ASC",
+      "oracle": "Independent fixed refund requests: 21 requested Feb3 12:00 and completed Feb3 12:05, so it was already complete at the cutoff. Refund22 requested Feb4 12:00 and completed Feb4 12:05: its request precedes 12:03 but completion follows it, so retain it even though its present status is succeeded. Refund71 first requested Feb6 and all other refunds in March, so they did not yet exist. Expected one row:22,succeeded,20,Feb4 12:00,Feb4 12:05.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            22,
+            "succeeded",
+            "20.00",
+            "2026-02-04T12:00:00",
+            "2026-02-04T12:05:00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v6_paid_category_quantity_and_net",
+      "split": "dev",
+      "tables": [
+        "ec_orders",
+        "ec_order_items",
+        "ec_products"
+      ],
+      "prompt": "请实际查询一次固定订单（ec_orders.id<1000）的已支付商品销售，订单status限paid、partially_refunded、refunded。将订单明细关联所属订单和对应商品，按商品category分组，完整返回有匹配明细的所有类别，包括净额为0的类别，不设置组筛选。依次返回category、明细行数、quantity合计、明细line_total合计，按category升序。金额来自成交明细净额，不用商品目录单价或重复的整单total_amount替代；数量不是明细行数，不添加LIMIT。",
+      "sql": "SELECT p.category, COUNT(*) AS line_count, SUM(i.quantity) AS units, SUM(i.line_total) AS net FROM ec_orders AS o INNER JOIN ec_order_items AS i ON i.order_id = o.id INNER JOIN ec_products AS p ON p.id = i.product_id WHERE o.id < 1000 AND o.status IN ('paid', 'partially_refunded', 'refunded') GROUP BY p.category ORDER BY p.category ASC",
+      "oracle": "Independent product categories: product1 electronics,2 home,3 books,4 gift,5 sports,6 electronics. Settled order lines: O1 has P1 quantity2/net80 and P2 quantity1/net20; O2 has P1 quantity2/net70 and P2 quantity1/net20; O4 P4 quantity1/net0; O6 P3 quantity1/net50; O7 P5 quantity4/net60; O8 P1 quantity2/net80. Cancelled O3 and pending O5 excluded. Categories yield books=(1 line,1 unit,50), electronics=(3,6,230), gift=(1,1,0), home=(2,2,40), sports=(1,4,60). MySQL SUM(integer quantity) is an exact Decimal represented by an integer string; COUNT is an integer. Include gift without HAVING.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            "books",
+            1,
+            "1",
+            "50.00"
+          ],
+          [
+            "electronics",
+            3,
+            "6",
+            "230.00"
+          ],
+          [
+            "gift",
+            1,
+            "1",
+            "0.00"
+          ],
+          [
+            "home",
+            2,
+            "2",
+            "40.00"
+          ],
+          [
+            "sports",
+            1,
+            "4",
+            "60.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v6_successful_refund_on_failed_payment",
+      "split": "dev",
+      "tables": [
+        "ec_refunds",
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次固定订单退款（ec_refunds.order_id<1000），核对是否存在status=succeeded的退款实际对应status=failed的支付流水。只按退款实际指向的那笔支付判断，不把同订单其他支付当成对应支付。返回符合条件的退款流水COUNT(*)与退款amount合计两列；没有匹配记录时保留数据库的空聚合原义，不将SUM填成0，不添加LIMIT。",
+      "sql": "SELECT COUNT(*) AS refund_count, SUM(r.amount) AS refund_total FROM ec_refunds AS r INNER JOIN ec_payments AS p ON r.order_id = p.order_id AND r.payment_id = p.id WHERE r.order_id < 1000 AND r.status = 'succeeded' AND p.status = 'failed'",
+      "oracle": "Independent successful refund parent IDs are 23,23,61,61,81,82, and all four distinct parent payments are succeeded. Failed payments are11,21,31. No correct refund-payment pair has failed status, so the aggregate is COUNT=0,SUM=NULL. In particular order2 has failed payment21 but its successful refunds21/22 both point to succeeded payment23; joining solely by order would manufacture two wrong matches. Refund IDs and payment IDs are unrelated identities even when a number happens to coincide.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            0,
+            null
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v6_background_creation_payment_intersection",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_orders中customer_id=1000的订单，必须同时满足：created_at在2026-02-15 12:00:00（含）到12:01:00（不含），并且paid_at在2026-02-15 12:01:30（含）到12:02:00（不含）。不添加status条件。依次返回订单笔数、total_amount合计、最小订单id、最大订单id。两个时间区间取交集，不取并集，不互换字段，不扩大成全天或添加LIMIT。",
+      "sql": "SELECT COUNT(*) AS order_count, SUM(total_amount) AS total, MIN(id) AS first_id, MAX(id) AS last_id FROM ec_orders WHERE customer_id = 1000 AND created_at >= '2026-02-15 12:00:00' AND created_at < '2026-02-15 12:01:00' AND paid_at >= '2026-02-15 12:01:30' AND paid_at < '2026-02-15 12:02:00'",
+      "oracle": "Independent anchor formula, default million-order dataset: k=0..999 has id=1000+1000*k, created_at=Feb15 12:00:00+k seconds, paid_at=created_at+60 seconds, total=100. First interval requires0<=k<60; second requires30<=k<60. Intersection is k30..59 inclusive:30 orders and3000.00. Minimum id=1000+30000=31000; maximum=1000+59000=60000. This is a closed-form derivation, not an executed query or a generator aggregation.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            30,
+            "3000.00",
+            31000,
+            60000
+          ]
+        ],
+        "ordered": false,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v6_multiunit_line_below_order_total",
+      "split": "dev",
+      "tables": [
+        "ec_orders",
+        "ec_order_items"
+      ],
+      "prompt": "请实际查询一次固定订单（ec_orders.id<1000）的明细，找出quantity大于1、line_total大于0且严格小于所属订单total_amount的明细。不限制订单status，每条明细独立比较，不先按商品或订单汇总。依次返回订单id、line_no、quantity、该行line_total、整单total_amount，按整单金额降序、同金额订单id升序及line_no升序。不用折前行金额代替line_total，不把等于整单金额的明细纳入，不添加LIMIT。",
+      "sql": "SELECT o.id, i.line_no, i.quantity, i.line_total, o.total_amount FROM ec_orders AS o INNER JOIN ec_order_items AS i ON i.order_id = o.id WHERE o.id < 1000 AND i.quantity > 1 AND i.line_total > 0 AND i.line_total < o.total_amount ORDER BY o.total_amount DESC, o.id ASC, i.line_no ASC",
+      "oracle": "Independent line ledger: multiunit rows are O1 line1 quantity2/net80 with order total100; O2 line1 quantity2/net70 with total90; O7 line1 quantity4/net60 with total60; O8 line1 quantity2/net80 with total80. Strictly below total retains only O1 and O2. O2 uses discounted70, not pre-discount80. All other lines have quantity1. Sort by order total descending yields O1 then O2, keeping integer quantities and Decimal money strings.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            1,
+            2,
+            "80.00",
+            "100.00"
+          ],
+          [
+            2,
+            1,
+            2,
+            "70.00",
+            "90.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v6_orders_with_varying_attempt_amounts",
+      "split": "dev",
+      "tables": [
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次ec_payments固定订单的全部支付尝试（order_id<1000），不筛status。按order_id分组，只返回各次尝试金额不完全相同的订单，即该组最小amount严格小于最大amount。依次返回订单id、尝试笔数、最小尝试金额、最大尝试金额、全部尝试amount合计，按最大尝试金额降序、同金额订单id升序。这是尝试金额分析，不是成功到账，不剔除失败或零金额，不添加LIMIT。",
+      "sql": "SELECT order_id, COUNT(*) AS attempt_count, MIN(amount) AS smallest, MAX(amount) AS largest, SUM(amount) AS attempted_total FROM ec_payments WHERE order_id < 1000 GROUP BY order_id HAVING MIN(amount) < MAX(amount) ORDER BY MAX(amount) DESC, order_id ASC",
+      "oracle": "Independent attempts by order: O1=[100 failed,100 succeeded], O2=[90 failed,40 succeeded,50 succeeded], O3=[50 failed], O4=[0 succeeded], O5=[25 pending], O6=[50 succeeded], O7=[60 succeeded], O8=[40 succeeded,40 succeeded]. Only O2 has MIN<MAX:3 attempts,min40,max90,total180. O1 and O8 have multiple attempts but equal amounts and must not pass. Filtering to succeeded first would incorrectly change O2 to count2,max50,total90.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            2,
+            3,
+            "40.00",
+            "90.00",
+            "180.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v7_failed_then_successful_attempt_pairs",
+      "split": "dev",
+      "tables": [
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次ec_payments固定订单（order_id<1000）的重试过程：在同一订单内，将每笔较早的失败支付尝试与每笔较晚的成功支付尝试配对。先后严格按两笔流水的created_at比较，时间相等不算；失败和成功分别指status=failed与succeeded。每个符合条件的尝试组合都保留，不把同一订单的多个成功尝试合并。依次返回订单id、失败支付id、成功支付id、失败尝试amount、成功到账amount，按订单id、失败支付id、成功支付id依次升序，不添加LIMIT。",
+      "sql": "SELECT f.order_id, f.id AS failed_id, s.id AS succeeded_id, f.amount AS failed_amount, s.amount AS succeeded_amount FROM ec_payments AS f INNER JOIN ec_payments AS s ON s.order_id = f.order_id AND s.created_at > f.created_at WHERE f.order_id < 1000 AND f.status = 'failed' AND s.status = 'succeeded' ORDER BY f.order_id ASC, f.id ASC, s.id ASC",
+      "oracle": "Independent literal payment ledger: order1 has failed11 created Jan31 23:59:10 and succeeded12 created 23:59:20, both amount100. Order2 has failed21 created Feb1 09:00:10 amount90 and later succeeded22 at09:00:20 amount40 plus succeeded23 at09:00:30 amount50. Order3 has failed31 without a later success; orders4/5/6/7/8 have no failed attempt. Thus exactly three ordered pairs, not two orders and not one pair per order.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            11,
+            12,
+            "100.00",
+            "100.00"
+          ],
+          [
+            2,
+            21,
+            22,
+            "90.00",
+            "40.00"
+          ],
+          [
+            2,
+            21,
+            23,
+            "90.00",
+            "50.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v7_latest_attempt_per_order",
+      "split": "dev",
+      "tables": [
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次ec_payments固定订单（order_id<1000），返回每个订单截至当前记录的最后一次支付尝试，最后按created_at最晚定义，不按paid_at定义，也不筛status。若同一订单多笔尝试并列最晚，应全部保留。依次输出订单id、支付id、status、amount、created_at，按订单id升序，同一订单按支付id升序。最后一次仍可能失败或待处理，不把尝试amount解释为已到账，不添加LIMIT。",
+      "sql": "SELECT p.order_id, p.id, p.status, p.amount, p.created_at FROM ec_payments AS p LEFT JOIN ec_payments AS later ON later.order_id = p.order_id AND later.created_at > p.created_at WHERE p.order_id < 1000 AND later.id IS NULL ORDER BY p.order_id ASC, p.id ASC",
+      "oracle": "Independent literal ledger: each fixed payment attempt is created at order.created_at plus sequence*10 seconds. The last sequences for orders1..8 are2,3,1,1,1,1,1,2, so IDs12/23/31/41/51/61/71/82. Their amounts are100/50/50/0/25/50/60/40; ID31 is failed and ID51 pending. The exact creation timestamps below follow those literal order dates and offsets. No ties exist in this fixture, although the reference keeps all ties instead of selecting a single arbitrary ID.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            12,
+            "succeeded",
+            "100.00",
+            "2026-01-31T23:59:20"
+          ],
+          [
+            2,
+            23,
+            "succeeded",
+            "50.00",
+            "2026-02-01T09:00:30"
+          ],
+          [
+            3,
+            31,
+            "failed",
+            "50.00",
+            "2026-02-02T10:00:10"
+          ],
+          [
+            4,
+            41,
+            "succeeded",
+            "0.00",
+            "2026-02-10T11:00:10"
+          ],
+          [
+            5,
+            51,
+            "pending",
+            "25.00",
+            "2026-02-20T12:00:10"
+          ],
+          [
+            6,
+            61,
+            "succeeded",
+            "50.00",
+            "2026-02-28T23:59:10"
+          ],
+          [
+            7,
+            71,
+            "succeeded",
+            "60.00",
+            "2026-01-15T10:00:10"
+          ],
+          [
+            8,
+            82,
+            "succeeded",
+            "40.00",
+            "2026-03-15T12:00:20"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v7_same_order_line_pairs",
+      "split": "dev",
+      "tables": [
+        "ec_order_items"
+      ],
+      "prompt": "请实际查询一次ec_order_items固定订单明细（order_id<1000），列出同一订单内两条不同明细组成的每个组合，不限制订单状态。每个组合只展示一次，line_no较小的明细放在前；不能把同一条明细与自身配对。依次返回订单id、前一明细line_no、后一明细line_no、这两行quantity之和、这两行line_total之和，按订单id和两个line_no依次升序。保持组合粒度，不汇总整个订单或商品，不添加LIMIT。",
+      "sql": "SELECT a.order_id, a.line_no AS first_line, b.line_no AS second_line, a.quantity + b.quantity AS pair_units, a.line_total + b.line_total AS pair_net FROM ec_order_items AS a INNER JOIN ec_order_items AS b ON b.order_id = a.order_id AND a.line_no < b.line_no WHERE a.order_id < 1000 ORDER BY a.order_id ASC, a.line_no ASC, b.line_no ASC",
+      "oracle": "Independent literal item ledger: only fixed orders1 and2 have two lines; all other fixed orders have one. Each pair is line1,line2 with quantities2 and1. Order1 line nets80+20=100; order2 discounted nets70+20=90. Therefore two combinations, each with integer pair quantity3. quantity+quantity is integer arithmetic, unlike SUM(quantity) which MySQL returns as exact Decimal. No self-pair or reversed duplicate is part of the result.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            1,
+            2,
+            3,
+            "100.00"
+          ],
+          [
+            2,
+            1,
+            2,
+            3,
+            "90.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v7_unpaid_order_count_including_zero_order_customers",
+      "split": "dev",
+      "tables": [
+        "ec_customers",
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_customers的全部固定客户（客户id<1000），统计每位客户的全部订单数，以及其中paid_at为空的订单数；不按当前订单status筛选，取消和待支付订单只要paid_at为空都计入第二个数。依次输出客户id、全部订单数、未支付订单数，按客户id升序。没有订单的客户也必须保留，两项数量均为0；关联产生的空行不是一张未支付订单。不筛选客户组，不添加LIMIT。",
+      "sql": "SELECT c.id, COUNT(o.id) AS order_count, COUNT(o.id) - COUNT(o.paid_at) AS unpaid_order_count FROM ec_customers AS c LEFT JOIN ec_orders AS o ON o.customer_id = c.id WHERE c.id < 1000 GROUP BY c.id ORDER BY c.id ASC",
+      "oracle": "Independent customer/order ledger: customer1 owns orders1,2, both dated; customer2 owns cancelled3 with NULL paid_at and dated6; customer3 owns dated zero-value4; customer4 none; customer5 owns pending5 with NULL paid_at; customer6 dated7; customer7 dated8; customer8 none. Total/unpaid counts are(2,0),(2,1),(1,0),(0,0),(1,1),(1,0),(1,0),(0,0). COUNT(order.id)-COUNT(order.paid_at) excludes a synthetic outer-join row; COUNT(*) minus dated count would incorrectly count one unpaid order for customers4/8.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            2,
+            0
+          ],
+          [
+            2,
+            2,
+            1
+          ],
+          [
+            3,
+            1,
+            0
+          ],
+          [
+            4,
+            0,
+            0
+          ],
+          [
+            5,
+            1,
+            1
+          ],
+          [
+            6,
+            1,
+            0
+          ],
+          [
+            7,
+            1,
+            0
+          ],
+          [
+            8,
+            0,
+            0
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v7_stored_line_price_differs_from_catalog",
+      "split": "dev",
+      "tables": [
+        "ec_order_items",
+        "ec_products"
+      ],
+      "prompt": "请实际查询一次固定订单明细（ec_order_items.order_id<1000），核对明细中保存的unit_price是否与对应ec_products的目录unit_price不同，只返回存在差异的明细，不限制订单状态。依次返回订单id、line_no、商品id、明细unit_price、商品目录unit_price，按订单id和line_no升序。这里比较两处保存的单价，不把折后line_total除以quantity当成明细unit_price；无差异就如实返回空集，不添加LIMIT。",
+      "sql": "SELECT i.order_id, i.line_no, i.product_id, i.unit_price AS line_price, p.unit_price AS catalog_price FROM ec_order_items AS i INNER JOIN ec_products AS p ON p.id = i.product_id WHERE i.order_id < 1000 AND i.unit_price <> p.unit_price ORDER BY i.order_id ASC, i.line_no ASC",
+      "oracle": "Independent literal catalog prices for products1..6 are40/20/50/0/15/25. Every fixed line stores the corresponding same unit price. In particular order2 product1 stores unit_price40 with quantity2 and discount10, so its net70 does not imply a stored unit price35. There are no differing stored prices; the correct result is an empty row set, not an aggregate row or the discounted line.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v7_uncompleted_refund_requests_by_payment",
+      "split": "dev",
+      "tables": [
+        "ec_refunds",
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次固定订单的退款申请（ec_refunds.order_id<1000），按实际对应的成功支付流水汇总尚未完成的申请。成功支付指支付status=succeeded；申请尚未完成只以completed_at为空为准，不额外筛退款status，所以失败申请也要纳入。依次返回对应支付id、该支付原amount、未完成申请笔数、未完成申请amount合计，按申请金额合计降序、支付id升序。只返回确有这种申请的支付；同一支付已经完成的成功退款不计入本次合计，申请金额不代表已实际退回的资金，不添加LIMIT。",
+      "sql": "SELECT r.payment_id, p.amount AS payment_amount, COUNT(*) AS request_count, SUM(r.amount) AS requested_amount FROM ec_refunds AS r INNER JOIN ec_payments AS p ON r.order_id = p.order_id AND r.payment_id = p.id WHERE r.order_id < 1000 AND r.completed_at IS NULL AND p.status = 'succeeded' GROUP BY r.payment_id, p.amount ORDER BY SUM(r.amount) DESC, r.payment_id ASC",
+      "oracle": "Independent literal refund ledger: pending refund71 targets succeeded payment71(amount60), has amount10 and NULL completion. Failed refund83 targets succeeded payment82(amount40), has amount5 and NULL completion. All other fixed refunds are succeeded with a completion timestamp. Payment82 also has completed refund82(amount20), which must be excluded from this unfinished-request metric. Thus payment71 contributes1/10 and payment82 contributes1/5, ordered by those sums; neither amount is asserted to have been refunded.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            71,
+            "60.00",
+            1,
+            "10.00"
+          ],
+          [
+            82,
+            "40.00",
+            1,
+            "5.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v7_background_disjoint_creation_windows",
+      "split": "dev",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_orders中customer_id=1000的订单，按created_at选择两段时间内的记录：2026-02-15 12:00:00（含）至12:00:02（不含），或者同日12:16:38（含）至12:16:40（不含）。两段之间的订单不属于结果，不添加status筛选。依次返回订单id、created_at、paid_at、total_amount，按created_at升序，同时间按订单id升序。时间条件只用于created_at，保留原始DATETIME值，不将两段合并为一个连续区间，不添加LIMIT。",
+      "sql": "SELECT id, created_at, paid_at, total_amount FROM ec_orders WHERE customer_id = 1000 AND ((created_at >= '2026-02-15 12:00:00' AND created_at < '2026-02-15 12:00:02') OR (created_at >= '2026-02-15 12:16:38' AND created_at < '2026-02-15 12:16:40')) ORDER BY created_at ASC, id ASC",
+      "oracle": "Independent closed-form cohort: for k=0..999, order id=1000+1000*k, created_at=Feb15 12:00:00+k seconds, paid_at=created_at+60 seconds, amount100. The two disjoint windows select k=0,1,998,999 and no intervening k. Thus IDs1000,2000,999000,1000000, with the exact four timestamp pairs below. This uses the default million-order requirement and does not infer count from executing the generator or a query.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1000,
+            "2026-02-15T12:00:00",
+            "2026-02-15T12:01:00",
+            "100.00"
+          ],
+          [
+            2000,
+            "2026-02-15T12:00:01",
+            "2026-02-15T12:01:01",
+            "100.00"
+          ],
+          [
+            999000,
+            "2026-02-15T12:16:38",
+            "2026-02-15T12:17:38",
+            "100.00"
+          ],
+          [
+            1000000,
+            "2026-02-15T12:16:39",
+            "2026-02-15T12:17:39",
+            "100.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v7_background_category_retirement_denominators",
+      "split": "dev",
+      "tables": [
+        "ec_products"
+      ],
+      "prompt": "请实际查询一次ec_products中id从1000（含）到1195（不含）的背景商品，按category统计商品总数和已退役商品数。已退役以retired_at不为空为准；商品总数必须包含未退役商品，完整保留所有有商品的类别，包括退役数为0的类别，不设置组筛选。依次返回category、商品总数、已退役商品数，按category升序，不添加LIMIT。",
+      "sql": "SELECT category, COUNT(*) AS product_count, COUNT(retired_at) AS retired_count FROM ec_products WHERE id >= 1000 AND id < 1195 GROUP BY category ORDER BY category ASC",
+      "oracle": "Independent background formula: product id=1000+i for i=0..194 gives195 products. Categories repeat electronics/home/books/gift/sports by i mod5, giving39 products per category. Retirement is non-NULL exactly when i mod97=0: i=0,97,194 belong respectively to electronics,books,sports. Alphabetical rows are books39/1,electronics39/1,gift39/0,home39/0,sports39/1. Filtering out non-retired rows first would lose the correct denominators and the zero-retirement groups.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            "books",
+            39,
+            1
+          ],
+          [
+            "electronics",
+            39,
+            1
+          ],
+          [
+            "gift",
+            39,
+            0
+          ],
+          [
+            "home",
+            39,
+            0
+          ],
+          [
+            "sports",
+            39,
+            1
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v8_orders_with_high_average_line_quantity",
+      "split": "holdout",
+      "tables": [
+        "ec_order_items"
+      ],
+      "prompt": "请实际查询一次ec_order_items固定订单明细（order_id<1000）：找出平均每条明细购买件数严格大于1.5的订单，平均值需包含该订单所有明细，不限制订单状态。依次返回订单id、明细行数、平均每行quantity、quantity总件数，按平均件数降序，同值按订单id升序。这里计算的是每行件数的平均值，不是挑出单行quantity较大的明细。",
+      "sql": "SELECT order_id, COUNT(*) AS line_count, AVG(quantity) AS average_units, SUM(quantity) AS total_units FROM ec_order_items WHERE order_id < 1000 GROUP BY order_id HAVING AVG(quantity) > 1.5 ORDER BY AVG(quantity) DESC, order_id ASC",
+      "oracle": "Independent literal item ledger: orders1 and2 each have quantities2,1, hence average3/2=1.5 and fail the strict threshold. Orders3/4/5/6 each have one unit on one line, average1. Order7 has one line quantity4 and order8 one line quantity2, so only7 then8 survive, each line_count1. MySQL exact integer AVG uses Decimal with the default four fractional digits, giving4.0000 and2.0000; SUM(integer quantity) is an exact Decimal string4 or2. No generator or SQL output was used as the oracle. Type reference: https://dev.mysql.com/doc/refman/8.4/en/precision-math-examples.html and https://dev.mysql.com/doc/refman/8.4/en/aggregate-functions.html .",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            7,
+            1,
+            "4.0000",
+            "4"
+          ],
+          [
+            8,
+            1,
+            "2.0000",
+            "2"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v8_equal_successful_amounts_across_orders",
+      "split": "holdout",
+      "tables": [
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次ec_payments固定订单的成功支付流水（order_id<1000，status=succeeded），查找来自不同订单、但amount完全相同的两笔支付组合。每个组合只展示一次，较小支付id放在前；同一订单的两笔支付不算。依次返回前一支付id、其order_id、后一支付id、其order_id、共同amount，按前一支付id、后一支付id依次升序。相同金额的不同支付仍是不同流水。",
+      "sql": "SELECT a.id AS first_payment, a.order_id AS first_order, b.id AS second_payment, b.order_id AS second_order, a.amount FROM ec_payments AS a INNER JOIN ec_payments AS b ON a.amount = b.amount AND a.order_id <> b.order_id AND a.id < b.id WHERE a.order_id < 1000 AND b.order_id < 1000 AND a.status = 'succeeded' AND b.status = 'succeeded' ORDER BY a.id ASC, b.id ASC",
+      "oracle": "Independent successful-payment ledger: amount40 occurs on payment22/order2 and payments81,82/order8. Cross-order unordered pairs are22-81 and22-82;81-82 is excluded because both belong to order8. Amount50 occurs on23/order2 and61/order6, giving23-61. Amounts100(payment12),0(payment41),60(payment71) occur once. Failed/pending attempts do not participate. Exactly three ordered rows remain, with both distinct40-value pairs preserved.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            22,
+            2,
+            81,
+            8,
+            "40.00"
+          ],
+          [
+            22,
+            2,
+            82,
+            8,
+            "40.00"
+          ],
+          [
+            23,
+            2,
+            61,
+            6,
+            "50.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v8_same_customer_order_amount_changes",
+      "split": "holdout",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_orders固定订单（id<1000），比较同一客户较早创建的订单与较晚创建的订单的原总额变化。先后严格按created_at判断，每一对符合先后关系的订单都返回，不只取相邻订单，也不限制订单status。依次输出客户id、较早订单id、较晚订单id、较早total_amount、较晚total_amount、较晚金额减较早金额的差值，按客户id、较早订单id、较晚订单id依次升序。差值允许为负或零，退款不从订单原总额中扣除。",
+      "sql": "SELECT a.customer_id, a.id AS earlier_order, b.id AS later_order, a.total_amount AS earlier_amount, b.total_amount AS later_amount, b.total_amount - a.total_amount AS amount_change FROM ec_orders AS a INNER JOIN ec_orders AS b ON b.customer_id = a.customer_id AND b.created_at > a.created_at WHERE a.id < 1000 AND b.id < 1000 ORDER BY a.customer_id ASC, a.id ASC, b.id ASC",
+      "oracle": "Independent order ledger: only fixed customers1 and2 have multiple orders. Customer1 has order1(Jan31,100) before order2(Feb1,90), change90-100=-10. Customer2 has cancelled order3(Feb2,50) before refunded order6(Feb28,50), change0. Other fixed customers have zero or one order, so no pair. All statuses and original order gross are retained. Differences are exact two-decimal values, including negative10.00; this is not a cash received/refunded measure.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            1,
+            2,
+            "100.00",
+            "90.00",
+            "-10.00"
+          ],
+          [
+            2,
+            3,
+            6,
+            "50.00",
+            "50.00",
+            "0.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v8_repeated_product_lines_within_order",
+      "split": "holdout",
+      "tables": [
+        "ec_order_items"
+      ],
+      "prompt": "请实际查询一次ec_order_items固定订单明细（order_id<1000），检查是否有订单将同一种product_id分在至少两条不同明细中，不限制订单状态。每个符合条件的订单与商品组合返回一行，依次输出订单id、product_id、明细条数、quantity合计，按订单id、product_id升序。不同订单中的同一商品不能合并为一个组合；没有重复明细组合就如实返回空结果。",
+      "sql": "SELECT order_id, product_id, COUNT(*) AS line_count, SUM(quantity) AS units FROM ec_order_items WHERE order_id < 1000 GROUP BY order_id, product_id HAVING COUNT(*) >= 2 ORDER BY order_id ASC, product_id ASC",
+      "oracle": "Independent fixed line ledger: orders1 and2 each contain product1 and product2 once apiece; order3 product3, order4 product4, order5 product6, order6 product3, order7 product5 and order8 product1 each appear on a single line. Repetition across orders is not repetition within an (order_id,product_id) group. Every group therefore has one line and the grouped result after the at-least-two filter is empty, with no synthetic zero-count aggregate row.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v8_catalog_sku_suffix_and_price",
+      "split": "holdout",
+      "tables": [
+        "ec_products"
+      ],
+      "prompt": "请实际查询一次ec_products固定商品（id<1000），只找sku最后一位为2或5、并且目录unit_price不高于20的商品。依次返回商品id、sku、unit_price，按unit_price从低到高排列，同价按商品id升序。sku保留原字符串，包括其中的前缀和补零。",
+      "sql": "SELECT id, sku, unit_price FROM ec_products WHERE id < 1000 AND (sku LIKE '%2' OR sku LIKE '%5') AND unit_price <= 20 ORDER BY unit_price ASC, id ASC",
+      "oracle": "Independent catalog contract: fixed SKU is EC-SKU- followed by the eight-digit zero-padded product ID. The suffix condition selects products2 and5, priced20 and15 respectively; both meet the inclusive price ceiling. Price-ascending output is product5 with EC-SKU-00000005 and15.00, then product2 with EC-SKU-00000002 and20.00. No numeric conversion may drop the SKU prefix or zeros.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            5,
+            "EC-SKU-00000005",
+            "15.00"
+          ],
+          [
+            2,
+            "EC-SKU-00000002",
+            "20.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v8_attempted_amount_exceeds_order_gross",
+      "split": "holdout",
+      "tables": [
+        "ec_orders",
+        "ec_payments"
+      ],
+      "prompt": "请实际查询一次固定订单（ec_orders.id<1000）的全部支付尝试，找出所有尝试amount相加后严格超过订单原total_amount的订单，不筛选订单或支付status。依次返回订单id、订单原金额、支付尝试笔数、全部尝试金额合计、尝试合计减订单原金额的超出值，按超出值降序，同值按订单id升序。这里衡量的是重复尝试涉及的金额，不是成功到账，也不能把一张订单的原金额按尝试笔数重复累加。",
+      "sql": "SELECT o.id, o.total_amount, COUNT(p.id) AS attempt_count, SUM(p.amount) AS attempted_total, SUM(p.amount) - o.total_amount AS excess FROM ec_orders AS o INNER JOIN ec_payments AS p ON p.order_id = o.id WHERE o.id < 1000 GROUP BY o.id, o.total_amount HAVING SUM(p.amount) > o.total_amount ORDER BY SUM(p.amount) - o.total_amount DESC, o.id ASC",
+      "oracle": "Independent payment/order ledger: order1 has failed100 plus succeeded100, so two attempts total200 versus order gross100, excess100. Order2 has failed90 plus succeeded40 and50, so three attempts total180 versus gross90, excess90. Orders3/4/5/6/7 have single attempts equal to gross50/0/25/50/60; order8 has40+40=80 equal to gross80. Only1 and2 exceed gross. Order1 must appear even though its attempt amounts are identical, unlike the earlier varying-amount metric.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            1,
+            "100.00",
+            2,
+            "200.00",
+            "100.00"
+          ],
+          [
+            2,
+            "90.00",
+            3,
+            "180.00",
+            "90.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v8_background_paid_time_page",
+      "split": "holdout",
+      "tables": [
+        "ec_orders"
+      ],
+      "prompt": "请实际查询一次ec_orders中customer_id=1000的订单，按paid_at从新到旧查看，同一时间订单id较大的排在前。跳过排在最前面的两张订单，再取接下来的三张；不另外按日期或status筛选。依次返回订单id、paid_at、total_amount，保持该页顺序及原始时间值。",
+      "sql": "SELECT id, paid_at, total_amount FROM ec_orders WHERE customer_id = 1000 ORDER BY paid_at DESC, id DESC LIMIT 3 OFFSET 2",
+      "oracle": "Independent cohort formula at the required default scale: k=0..999, id=1000+1000*k, paid_at=Feb15 12:01:00+k seconds, amount100. Descending payment time visits k999,998,997,996,995,... . Skipping the first two and taking three selects k997/996/995, IDs998000/997000/996000, paid at12:17:37/12:17:36/12:17:35. This is the complete explicitly requested page; its three rows are not the total cohort size and do not indicate service truncation.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            998000,
+            "2026-02-15T12:17:37",
+            "100.00"
+          ],
+          [
+            997000,
+            "2026-02-15T12:17:36",
+            "100.00"
+          ],
+          [
+            996000,
+            "2026-02-15T12:17:35",
+            "100.00"
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    },
+    {
+      "id": "v8_background_region_population_with_missing",
+      "split": "holdout",
+      "tables": [
+        "ec_customers"
+      ],
+      "prompt": "请实际查询一次ec_customers中id从1000（含）到1045（不含）的背景客户地区分布，按region统计客户人数。未填写region的客户作为NULL地区组保留，完整返回所有组。依次输出region、客户人数，先按人数降序，同人数按region升序；NULL保持原值，不填成其他地区名。",
+      "sql": "SELECT region, COUNT(*) AS customer_count FROM ec_customers WHERE id >= 1000 AND id < 1045 GROUP BY region ORDER BY COUNT(*) DESC, region ASC",
+      "oracle": "Independent background customer formula: IDs1000..1044 correspond to i0..44. Region is NULL when i mod11=0, giving i0,11,22,33,44: five missing values. Otherwise i mod4 maps0 east,1 west,2 north,3 south. Before NULL replacement the residue counts are12,11,11,11; the five replaced residues are0,3,2,1,0, leaving ten customers in every named region. Count-descending then region-ascending output is east10,north10,south10,west10,NULL5; total45. This is a formula-derived distribution, not a generated or executed aggregate.",
+      "expected": {
+        "status": "ok",
+        "decision": "ALLOW",
+        "execution_status": "completed",
+        "rows": [
+          [
+            "east",
+            10
+          ],
+          [
+            "north",
+            10
+          ],
+          [
+            "south",
+            10
+          ],
+          [
+            "west",
+            10
+          ],
+          [
+            null,
+            5
+          ]
+        ],
+        "ordered": true,
+        "truncated": false
+      }
+    }
+  ]
+}

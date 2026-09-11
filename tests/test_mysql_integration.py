@@ -5,6 +5,7 @@ seeding tests/fixtures/mysql_business.sql. These tests never create or seed data
 """
 
 import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
 
@@ -24,6 +25,9 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 def database_settings():
     settings = load_database_settings()
+    assert (settings.host, settings.port, settings.database, settings.user) == (
+        "127.0.0.1", 13306, "db_agent", "db_agent_reader",
+    )
     # This fixture only tests the original public tables, even after ecommerce is loaded.
     original = ("customers", "orders", "order_items")
     assert set(original).issubset(settings.allowed_tables)
@@ -88,6 +92,33 @@ def test_narrow_allowlist_filters_listing_and_blocks_other_tables(database_setti
 
     assert [table["name"] for table in listed["tables"]] == ["orders"]
     assert code == "PERMISSION_DENIED"
+
+
+@pytest.mark.parametrize("table,foreign_keys", [
+    ("customers", []),
+    ("orders", [{"name": "fk_orders_customer", "columns": ["customer_id"],
+                 "referenced_table": "customers", "referenced_columns": ["id"]}]),
+    ("order_items", [{"name": "fk_order_items_order", "columns": ["order_id"],
+                      "referenced_table": "orders", "referenced_columns": ["id"]}]),
+])
+def test_real_fixture_foreign_keys_match_declared_relationships(
+    database_settings, table, foreign_keys,
+):
+    details = asyncio.run(MetadataConnector(database_settings).describe_table(table))
+
+    assert details["foreign_keys"] == foreign_keys
+    assert details["foreign_keys_scope"] == "current_database_authorized_tables"
+
+
+def test_real_narrow_scope_does_not_reveal_unapproved_foreign_key_targets(database_settings):
+    settings = database_settings.model_copy(update={"allowed_tables": ("orders",)})
+
+    details = asyncio.run(MetadataConnector(settings).describe_table("orders"))
+
+    assert details["foreign_keys"] == []
+    assert details["foreign_keys_scope"] == "current_database_authorized_tables"
+    serialized = json.dumps(details)
+    assert "customers" not in serialized and "fk_orders_customer" not in serialized
 
 
 @pytest.mark.parametrize("table", ["mysql.user", "orders; DROP TABLE orders", "orders` OR 1=1"])

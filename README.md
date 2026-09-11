@@ -8,7 +8,7 @@
 
 项目大步骤、完成状态和下一步优先级统一维护在 [TODO 清单](TODO.md)。开始新任务前先核对清单，再按本文查找运行方式与能力限制。
 
-已加入独立需求合同、完整 SQL 编译与最终复核，修复已知漏筛选问题，旧题真实 Agent 回归通过。第 11 步整体仍在验收：新题的退款汇总受真实计划风险限制，尚不能完成全部约定查询。各次结果与失败分别记录在 [电商验收记录](docs/ecommerce.md)，不能把模型 match 或安全拒绝当作业务查询成功。
+已加入独立需求合同、完整 SQL 编译与最终复核，修复已知漏筛选与退款关联缺失问题。初始模型可从授权候选表名选择相关表，仍须读取实际结构；生成查询遵循现有 SQL 子集。第11步已完成约定合成场景的业务验收，下一步是会话内多轮查询。最终真实 Agent 新题16/16、旧题61/64；三次超时或复核协议失败如实保留，不能把模型 match 或未执行当作查数成功，详见[电商验收记录](docs/ecommerce.md#2026-09-11-v8-最终业务验收)。
 
 ## 快速开始
 
@@ -34,7 +34,7 @@ uv run db-agent check
 | `DB_AGENT_MODEL` | 模型名称 | 必填 |
 | `DB_AGENT_REQUEST_TIMEOUT_SECONDS` | 单次模型请求超时（秒） | `30` |
 | `DB_AGENT_RUN_TIMEOUT_SECONDS` | 一次 Agent 运行的模型与工具总时限（秒） | `60` |
-| `DB_AGENT_MAX_OUTPUT_TOKENS` | 每次模型响应的输出 token 上限 | `1024` |
+| `DB_AGENT_MAX_OUTPUT_TOKENS` | 向模型请求的每次输出 token 上限 | `1024` |
 | `DB_AGENT_MAX_MODEL_CALLS` | 一次 Agent 运行的模型调用上限 | `4` |
 | `DB_AGENT_MAX_TOOL_CALLS` | 一次 Agent 运行的工具调用上限 | `6` |
 
@@ -118,7 +118,7 @@ uv run db-agent db describe orders
 uv run db-agent chat "查看 orders 的字段和索引，说明按 customer_id 和 created_at 查询时可考虑哪些索引。"
 ```
 
-`db` 子命令不需要模型凭据；`chat` 需要模型与数据库配置，接入 `list_tables`、`describe_table`、`analyze_sql`、`execute_query`。白名单为空时不列出任何表，引用未授权表会被拒绝。元数据工具仅返回基础表的表名、字段与索引，不返回表注释、默认值、外键元数据或业务行；模型根据字段名推断关系时必须说明尚未验证。
+`db` 子命令不需要模型凭据；`chat` 需要模型与数据库配置，接入 `list_tables`、`describe_table`、`analyze_sql`、`execute_query`。白名单为空时不列出任何表，引用未授权表会被拒绝。元数据工具返回基础表的表名、字段、索引，以及同库授权基础表之间声明的外键列对；不返回注释、默认值或业务行。复合外键保持完整列顺序，组件共享原有元数据行数与字节预算，超限时不返回半条关系。`foreign_keys_scope` 明确目标范围；空列表不表示数据库没有其他关系，外键声明也不证明历史数据均符合约束。模型不能根据字段名或索引补造关系事实。
 
 ### SQL 预检与诊断
 
@@ -221,7 +221,7 @@ DB_AGENT_MYSQL_DDL_INTEGRATION=1 uv run pytest tests/test_mysql_query_isolation.
 
 | 能力 | 首版做到什么程度 |
 | --- | --- |
-| 数据源与元数据 | 明确授权的 MySQL 数据源，按授权获取相关表结构、字段及索引 |
+| 数据源与元数据 | 明确授权的 MySQL 数据源，按授权获取字段、索引及同库基础表之间声明的完整外键列对 |
 | 权限校验 | 由服务端绑定身份，检查环境、数据源、库表和操作类型；配合最小权限数据库账号 |
 | SQL 静态检查 | 基于 MySQL 方言的语法树限定单语句和支持的语法，识别越界访问与危险操作 |
 | 执行计划分析 | 对通过前置检查的查询获取普通 `EXPLAIN FORMAT=JSON`，结合规模统计和策略阈值输出风险证据 |
@@ -273,7 +273,7 @@ flowchart TD
 
 ## 技术与模块
 
-当前通过 `langchain_openai.ChatOpenAI` 接入一个 OpenAI 兼容模型，由 `langchain.agents.create_agent` 调度元数据工具、`analyze_sql` 与 `execute_query`。LangChain 内部使用 LangGraph，本项目不自写工具循环或自定义 Graph。每次 Agent 运行创建并释放自有 HTTP 客户端，默认最多调用模型 4 次、工具 6 次，总时限 60 秒、每次输出 1024 token；工具顺序执行，模型请求禁用自动重试。
+当前通过 `langchain_openai.ChatOpenAI` 接入一个 OpenAI 兼容模型，由 `langchain.agents.create_agent` 调度元数据工具、`analyze_sql` 与 `execute_query`。LangChain 内部使用 LangGraph，本项目不自写工具循环或自定义 Graph。每次 Agent 运行创建并释放自有 HTTP 客户端，默认最多调用模型 4 次、工具 6 次，总时限 60 秒、请求输出上限 1024 token；工具顺序执行，模型请求禁用自动重试。输出限制传给提供方，当前不在本地按返回 usage 强制限制 token；真实诊断观察过提供方输出计数超配置，不能据此配置承诺实际输出量或费用上限。
 
 `chat` 的查询执行前增加[需求核对](docs/semantic-review.md)：独立的 `QueryIntent` 提取只接收原始任务与本次实际取得的结构，不接收主候选 SQL。代码校验完整合同并编译 SQL，用保守 AST 对照决定保留主候选还是选择整份合同，再对选定 SQL 做一次独立最终复核。所有阶段共享原模型预算；仅复核 `match` 才进入原 `QueryService` 和连接器，重新完成权限、静态规则、EXPLAIN 与事务检查。没有完整合同、复核失败或预算不足时停止。
 
@@ -331,7 +331,7 @@ flowchart TD
 
 ## 后续业务路线
 
-推进顺序与完成状态见 [TODO 清单](TODO.md)。清单区分已完成的基础闭环、下一步的业务验收、随后推进的连续使用能力，以及按需求选择的后续方向。
+推进顺序与完成状态见 [TODO 清单](TODO.md)。清单区分已完成的基础闭环与约定场景业务验收、下一步的连续使用能力，以及按需求选择的后续方向。
 
 记忆不保存可跨任务复用的执行授权。数据库变更和应用任务记录之间的恢复语义需要单独设计；不能将聊天恢复当成事务恢复，也不能把 DDL 当作可普遍事务回滚的操作。
 

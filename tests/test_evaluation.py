@@ -120,7 +120,9 @@ def test_legacy_load_api_defaults_to_v1_and_marks_old_holdout_as_exposed():
 
 
 @pytest.mark.parametrize(
-    "suite,previous,dev_count", [("v3", "v2", 24), ("v4", "v3", 32), ("v5", "v4", 40)],
+    "suite,previous,dev_count",
+    [("v3", "v2", 24), ("v4", "v3", 32), ("v5", "v4", 40), ("v6", "v5", 48),
+     ("v7", "v6", 56), ("v8", "v7", 64)],
 )
 def test_later_suites_preserve_exposed_cases_and_use_independent_new_tasks(
     limits, suite, previous, dev_count,
@@ -135,7 +137,9 @@ def test_later_suites_preserve_exposed_cases_and_use_independent_new_tasks(
     ] == [dict(item, split="dev") for item in previous_cases]
     assert {item["id"] for item in dev}.isdisjoint(item["id"] for item in holdout)
     assert dev_manifest["split_role"] == "exposed_regression"
-    assert holdout_manifest["split_role"] == "exposed_regression"
+    assert holdout_manifest["split_role"] == (
+        "held_out_acceptance" if suite == "v8" else "exposed_regression"
+    )
     assert dev_manifest["business_context_sha256"] == holdout_manifest["business_context_sha256"]
     for item in holdout:
         assert MetadataConnector(limits.database).check_sql(
@@ -149,9 +153,13 @@ def test_later_suites_preserve_exposed_cases_and_use_independent_new_tasks(
         assert evaluation._digest(previous_bytes) == (
             "71d0b7b92006299b6d7a16edc19af8c5c69ce2309de3489137013e506adf4baa"
         )
+    if previous == "v5":
+        assert evaluation._digest(previous_bytes) == (
+            "59e305d40de21563988804ca5a07c907aadff1d6af3f323f664d399c74d6f8f8"
+        )
 
 
-@pytest.mark.parametrize("suite", ["../ecommerce-v2", "v6", "ecommerce-v2.json"])
+@pytest.mark.parametrize("suite", ["../ecommerce-v2", "v9", "ecommerce-v2.json"])
 def test_suite_selection_accepts_only_fixed_names(suite):
     with pytest.raises(evaluation.EvaluationError, match="suite"):
         evaluation.load_cases("dev", suite=suite)

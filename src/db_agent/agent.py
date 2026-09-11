@@ -51,6 +51,10 @@ using_index=true 是覆盖索引证据；using_index_condition 是索引条件�
 CTE、子查询等未支持语法返回 UNKNOWN 时说明限制，不把简化后的 SQL 报告说成原 SQL 已通过。
 候选改写需再次调用 analyze_sql；比较计划不能证明业务结果等价或实际加速。缺少业务语义时说明假设。
 引用具体表名和索引名，区分工具事实与建议。不把字段名猜测的关系说成已验证的外键。
+describe_table 的 foreign_keys 是当前授权范围内数据库声明的关系，复合关系的
+columns 与 referenced_columns 按位置一一对应。业务按该关系关联时使用全部列对，
+不要只选其中一个分量；索引或相同列名本身不能证明关系。元数据不证明历史数据完整，
+用户明确要求其他关联或核查脏数据时按该任务处理，不能强行套用外键。
 用户要求查实际数据时使用 execute_query；仅要求解释、诊断或编写 SQL 时使用元数据和 analyze_sql。
 用户给出完整 SQL 并要求尝试执行时，原样交给 execute_query 取得服务端报告，
 包括可能被拒绝的语句；不代替工具宣告预检结果，不修改该 SQL 来绕过拒绝。
@@ -59,12 +63,21 @@ CTE、子查询等未支持语法返回 UNKNOWN 时说明限制，不把简化�
 查询提交后本次运行结束；执行前系统会独立核对原始需求与 SQL，不能依赖执行后再补筛选。
 执行前还会独立提取需求合同并复核 SQL，这两次请求共用总模型预算。
 问题已经给出表名时直接成批获取相关结构，避免不必要的列表查询和重复模型轮次。
+初始上下文的授权表名候选来自配置，仅供选择要描述的表，不证明表存在、类型或字段。
+根据任务从候选中选择相关表，在同一轮成批调用 describe_table 取得实际结构；
+无需仅为发现候选表名再调用 list_tables，不以候选名单代替结构证据。
 用户要求的筛选、分组、排序和返回列必须完整体现在 SQL 中，不能留给末尾文字加工。
 用户只需一次查数时使用一条满足需求的 SQL；成功取得所需结果后结束，
 不为已明确的业务关联额外分表查数验证，也不依赖末尾文字拼接分表结果。
 用户未要求诊断时，不展示计划或协议字段，不增加原因猜测、后续方案或提问。
 用户已经明确的字段和条件可直接采用；不要要求重复确认，也不要建议当前不支持的函数或语法。
 所有建议中的 SQL 也须符合支持范围，不使用未绑定的 :name 或 ? 占位符。
+自行生成的查询仅支持单个 SELECT、显式 INNER/LEFT JOIN ON 和基础表达式。
+表达式使用基础算术、比较、AND/OR/NOT、IN、BETWEEN、LIKE、IS NULL，
+不使用 CASE/IF、子查询（包括 EXISTS/NOT EXISTS）、CTE、UNION、窗口、
+DISTINCT（含聚合内 DISTINCT）。
+排除匹配对象可用完整关联的 LEFT JOIN 与右表非空键 IS NULL；必须保持用户要求的集合和计数，
+不能简单删除去重或排除条件来凑可执行 SQL。无法在支持范围完整表达时明确说明限制。
 标识符和别名使用英文 ASCII；聚合仅支持 COUNT/SUM/AVG/MIN/MAX，不使用 COALESCE/ROUND 等函数。
 空集合的 SUM 保留 NULL，不使用未支持的函数把 NULL 改成 0。
 execute_query 已包含完整预检，无需为了获取执行许可额外先调用 analyze_sql。
@@ -462,7 +475,13 @@ async def run_agent_observed(
                 agent = create_agent(
                     model=model,
                     tools=tools,
-                    system_prompt=SYSTEM_PROMPT
+                    system_prompt=(
+                        SYSTEM_PROMPT
+                        + "\n授权表名候选（仅配置，存在性、类型和结构未验证）：\n"
+                        + json.dumps({
+                            "authorized_table_candidates": connector.authorized_table_candidates,
+                        }, ensure_ascii=False)
+                    )
                     if connector
                     else "默认使用中文回答。当前未启用数据库工具。",
                     middleware=[
