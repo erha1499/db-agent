@@ -2,6 +2,21 @@
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
+const identity = {
+  username: 'analyst',
+  display_name: '合成测试用户',
+  authorization_version: 'v1',
+  allowed_tables: ['orders'],
+  model_tables: ['orders'],
+  model_enabled: true,
+};
+const auth = {
+  authenticated: true,
+  session_id: 'test-session',
+  identity,
+  model_boundary: '合成 HTTP 替身：原文与获准结构发送模型，结果行不发送。',
+};
+
 const stamp = '2026-09-11T08:00:00Z';
 const run = {
   id: 'run-a',
@@ -89,12 +104,15 @@ async function setup(
     calls.push(`${method} ${path}`);
     const body = request.postDataJSON();
     const send = (json: unknown, status = 200) => route.fulfill({ json, status });
+    if (path === '/auth/session') return send(auth);
     if (path === '/status') {
       if (options.failStartup && !startupFailed) {
         startupFailed = true;
         return send({ error: { message: '服务暂时不可用' } }, 503);
       }
       return send({
+        identity,
+        model_boundary: auth.model_boundary,
         database: 'db_agent',
         database_configured: options.configured !== false,
         model_configured: options.configured !== false,

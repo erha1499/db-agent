@@ -5,6 +5,7 @@ import json
 import math
 import re
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 import aiomysql
@@ -42,9 +43,18 @@ class DatabaseError(RuntimeError):
 class MetadataConnector:
     """每个实例顺序处理受控数据库请求，总超时预算包括排队。"""
 
-    def __init__(self, settings: DatabaseSettings):
+    def __init__(
+        self, settings: DatabaseSettings, *, authorization_check: Callable[[], None] | None = None,
+        knowledge_scope: str | None = None,
+    ):
         self._settings = settings.model_copy(deep=True)
         self._lock = asyncio.Lock()
+        self._authorization_check = authorization_check
+        self._knowledge_scope = knowledge_scope
+
+    def _authorize(self):
+        if self._authorization_check:
+            self._authorization_check()
 
     @property
     def database(self) -> str:
@@ -52,7 +62,10 @@ class MetadataConnector:
 
     @property
     def knowledge_scope(self) -> str:
-        """Opaque source/account/allowlist binding; never exposes credentials."""
+        """Trusted Web principal scope, or local CLI source/account/allowlist scope."""
+        self._authorize()
+        if self._knowledge_scope is not None:
+            return self._knowledge_scope
         from db_agent.conversations import source_scope
 
         return source_scope(self._settings)
@@ -64,6 +77,7 @@ class MetadataConnector:
 
     def check_sql(self, sql: str, limits: AnalysisSettings) -> SqlCheck:
         """Check the current trusted scope without accessing the database."""
+        self._authorize()
         return check_sql(sql, self.database, self._settings.allowed_tables, limits)
 
     async def explain_checked(self, sql: str, limits: AnalysisSettings) -> dict:
@@ -203,6 +217,7 @@ class MetadataConnector:
                         async with asyncio.timeout_at(analysis_deadline):
                             await before_select(connection)
                         self._require_readonly_transaction(connection)
+                    self._authorize()
                     phase = "execution"
                     select_started = time.monotonic()
                     async with asyncio.timeout(query_limits.execution_timeout_seconds):
@@ -210,6 +225,7 @@ class MetadataConnector:
                         # None preserves literal % characters; the SQL is never rewritten.
                         await cursor.execute(sql, None)
                         result = await read_query_result(cursor, query_limits)
+                        self._authorize()
                         if result["server_statement_status"] == "completed":
                             await cursor.close()
                         outcome.update(
@@ -319,9 +335,11 @@ class MetadataConnector:
 
     async def _read_plan(self, connection, sql: str, limits: AnalysisSettings) -> dict:
         cursor = await connection.cursor()
+        self._authorize()
         # None avoids driver %-interpolation of literal SQL LIKE patterns.
         await cursor.execute("EXPLAIN FORMAT=JSON " + sql, None)
         row = await cursor.fetchone()
+        self._authorize()
         if not isinstance(row, dict) or set(row) != {"EXPLAIN"}:
             raise DatabaseError("INVALID_PLAN", "数据库未返回支持的 JSON 执行计划")
         raw = row["EXPLAIN"]
@@ -564,6 +582,7 @@ class MetadataConnector:
         try:
             async with asyncio.timeout(budget):
                 async with self._lock:
+                    self._authorize()
                     connection = None
                     try:
                         connection = await aiomysql.connect(
@@ -617,6 +636,7 @@ class MetadataConnector:
 
     async def _fetch(self, connection, query: str, params: tuple, all_rows: list) -> list:
         cursor = await connection.cursor()
+        self._authorize()
         await cursor.execute(query, params)
         rows = []
         while (row := await cursor.fetchone()) is not None:
@@ -626,6 +646,7 @@ class MetadataConnector:
             self._bounded_result(all_rows)
             rows.append(row)
         await cursor.close()
+        self._authorize()
         return rows
 
     def _bounded_result(self, result):

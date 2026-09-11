@@ -9,20 +9,45 @@ from threading import Event
 from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient as BaseTestClient
 
 from db_agent import web
 from db_agent.config import AnalysisSettings, DatabaseSettings, QuerySettings, Settings
 from db_agent.conversation_context import conversation_prompt
 from db_agent.conversations import ConversationStore, now
 from db_agent.presentation import AgentRunResult, QueryExecution, has_complete_query_results
+from db_agent.web_identity import password_hash
 
 HEADERS = {"X-DB-Agent-Client": "web"}
+PASSWORD = "synthetic-web-password"
+PASSWORD_HASH = password_hash(PASSWORD)
+
+
+class TestClient(BaseTestClient):
+    __test__ = False
+
+    def __enter__(self):
+        result = super().__enter__()
+        response = self.post("/api/auth/login", json={"username": "alice", "password": PASSWORD})
+        assert response.status_code == 200, response.text
+        self.headers["X-DB-Agent-Session"] = response.json()["session_id"]
+        return result
+
+
+def current_runtime(app):
+    return next(item for key, item in app.state.service.runtimes.items() if key.endswith(":alice"))
 
 
 @pytest.fixture(autouse=True)
 def configuration(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    path = tmp_path / "outputs/web/identities.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"version": 1, "users": [{
+        "username": "alice", "display_name": "Alice", "password_hash": PASSWORD_HASH,
+        "allowed_tables": ["orders"], "model_enabled": True, "model_tables": ["orders"],
+    }]}))
+    path.chmod(0o600)
     monkeypatch.setattr(
         web,
         "load_database_settings",
@@ -119,10 +144,11 @@ def test_history_crud_restart_and_scope(app, tmp_path):
     with TestClient(app, base_url="http://127.0.0.1:8000", headers=HEADERS) as client:
         assert client.get(f"/api/conversations/{item}").json()["title"] == "月度分析"
         assert len(client.get("/api/conversations").json()["conversations"]) == 1
-        app.state.runtime.scope = "changed-authorization"
+        scope = current_runtime(app).scope
+        current_runtime(app).scope = "changed-authorization"
         assert client.get(f"/api/conversations/{item}").status_code == 404
         assert client.get("/api/conversations").json()["conversations"] == []
-        app.state.runtime.scope = web.source_scope(web.load_database_settings())
+        current_runtime(app).scope = scope
         assert client.delete(f"/api/conversations/{item}").status_code == 200
         assert client.get(f"/api/conversations/{item}").status_code == 404
     assert Path(tmp_path / "history.sqlite3").stat().st_mode & 0o777 == 0o600
@@ -316,7 +342,7 @@ def test_idempotency_concurrency_and_cancellation(client, app, monkeypatch):
     assert client.post(f"/api/runs/{run_id}/cancel", json={}).json()["status"] == "cancelled"
     assert client.get("/api/status").json()["active_run_id"] is None
     assert client.get("/api/conversations").json()["conversations"][0]["active_run_id"] is None
-    assert not app.state.runtime.tasks
+    assert not current_runtime(app).tasks
 
 
 def test_cancel_still_works_when_sqlite_fails(client, app, monkeypatch):
@@ -337,17 +363,17 @@ def test_cancel_still_works_when_sqlite_fails(client, app, monkeypatch):
     run_id = start(client, conversation).json()["id"]
     assert entered.wait(1)
     with monkeypatch.context() as failure:
-        failure.setattr(app.state.runtime.store, "update_run", broken)
-        failure.setattr(app.state.runtime.store, "get_run", broken)
+        failure.setattr(current_runtime(app).store, "update_run", broken)
+        failure.setattr(current_runtime(app).store, "get_run", broken)
         assert client.post(f"/api/runs/{run_id}/cancel", json={}).status_code == 200
         run = terminal(client, run_id)
         assert run["error"]["code"] == "HISTORY_WRITE_FAILED"
         assert cleaned.wait(1)
-        assert not app.state.runtime.tasks
+        assert not current_runtime(app).tasks
     assert client.delete(f"/api/conversations/{conversation}").status_code == 200
     assert client.get(f"/api/runs/{run_id}").status_code == 404
-    assert not app.state.runtime.live
-    assert conversation not in app.state.runtime.unsaved_conversations
+    assert not current_runtime(app).live
+    assert conversation not in current_runtime(app).unsaved_conversations
 
 
 def test_task_cancelled_before_first_instruction_is_finalized(tmp_path):
@@ -477,7 +503,8 @@ def test_saved_result_analysis_export_restart_and_no_service_calls(app, monkeypa
         pytest.fail('Delivery must not call the model or database')
 
     monkeypatch.setattr(web, 'run_agent_observed', unexpected)
-    monkeypatch.setattr(web.MetadataConnector, 'execute_checked', unexpected)
+    from db_agent.db import MetadataConnector
+    monkeypatch.setattr(MetadataConnector, 'execute_checked', unexpected)
     with TestClient(app, base_url='http://127.0.0.1:8000', headers=HEADERS) as client:
         snapshot = client.get(path).json()
         assert snapshot['report'] == run['queries'][0]['report']
@@ -524,7 +551,7 @@ def test_result_binding_scope_and_input_boundaries(client, app, monkeypatch):
         assert client.get(path, headers=headers).status_code == 403
         response = client.post(path + '/export', json={'format': 'html'}, headers=headers)
         assert response.status_code == 403
-    app.state.runtime.scope = 'changed-source-or-authorization'
+    current_runtime(app).scope = 'changed-source-or-authorization'
     assert client.get(path).status_code == 404
     assert client.post(path + '/analysis', json={'dimension': 0, 'measure': 1}).status_code == 404
     assert client.post(path + '/export', json={'format': 'json'}).status_code == 404
@@ -534,14 +561,14 @@ def test_result_binding_scope_and_input_boundaries(client, app, monkeypatch):
 def test_nonterminal_or_failed_runs_not_deliverable(client, app, monkeypatch, state):
     _, run, path = saved_delivery(client, monkeypatch)
     run['status'] = state
-    app.state.runtime.store.update_run(run)
+    current_runtime(app).store.update_run(run)
     assert client.get(path).status_code == 409
     assert client.post(path + '/export', json={'format': 'json'}).status_code == 409
 
 
 def test_live_unsaved_missing_duplicate_and_invalid_results(client, app, monkeypatch):
     conversation, run, path = saved_delivery(client, monkeypatch)
-    runtime = app.state.runtime
+    runtime = current_runtime(app)
     runtime.unsaved_conversations.add(conversation)
     assert client.get(path).status_code == 409
     runtime.unsaved_conversations.clear()
