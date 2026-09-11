@@ -17,6 +17,8 @@ MySQL 使用项目 [Compose](../compose.yaml) 绑定的 MySQL 8.4.11 镜像摘�
 
 判定交付时先核对 PR 的完整 HEAD SHA，再读取该 HEAD 触发的全部 job。PR 工作流默认验证 GitHub 生成的合并结果；HEAD 对应运行成功和 PR 可合并状态需同时成立。旧 SHA 的绿色运行不能证明新提交通过。CI 规则覆盖了什么与仓库是否启用分支保护是两件事；此流程不修改仓库保护或权限。
 
+2026-09-11 的完整实现提交 `848fa724d8d4c9756d2728481a116485588b2e82` 已在[远端运行 34563655206](https://github.com/erha1499/db-agent/actions/runs/34563655206)通过全部五个 job：Python 3.11.12/3.13.3 各1395 passed、45 skipped；MySQL集成42 passed、事务锁3 passed；Node26.7.0/npm11.19.0 的Chromium合同12 passed；sdist111项、wheel27项检查和新环境安装通过。默认跳过的45项由真实MySQL两个步骤单独运行，不是漏掉后计为通过。Python有1条现有Starlette对AnyIO旧别名的弃用警告，不影响断言。前端 HTTP 合同、离线提供方替身、真实MySQL和下文真实模型探针分别保留边界；此处没有重新宣称百万规模业务评测通过。后续文档收尾提交及最新状态以 [PR #1](https://github.com/erha1499/db-agent/pull/1) 当前HEAD的运行结果为准。
+
 ## 安装与构建复现
 
 快速开发使用 Python 3.13 和 `uv sync --locked`。包声明的最低版本为 3.11，CI 同时回归 3.11 与 3.13；其他 Python/操作系统组合仍需实际验证。`--locked` 要求 `pyproject.toml` 与 `uv.lock` 一致，不能用 `--frozen` 掩盖过期锁文件。

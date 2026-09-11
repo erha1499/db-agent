@@ -110,6 +110,7 @@
 - 手工构造的计划 fixture 与真实 MySQL 计划分别标注；不能把小库或 fixture 测试报告成 TB 级压测。
 - 固定开发集与冻结测试集。若报告误拦、漏拦或业务正确率，写清标注依据、样本数、分母和运行次数；样本通过不等于生产安全保证。
 - 验证入口为 `uv run pytest`、`uv run ruff check .` 和 `git diff --check`；模型连通性使用 `uv run db-agent check` 单独验证。记录确实跑过的命令，不把离线替身测试当成模型或数据库集成成功。
+- GitHub CI 使用 `uv sync --locked` 回归 Python 3.11/3.13、全新本地 Compose 的真实 MySQL、前端 Chromium 合同和构建安装；最终交付核对当前 PR HEAD 的全部 job，不能沿用旧 SHA。前端锁文件仅使用公开 npm URL并保留 integrity，CI 显式指定 registry；构建依赖使用锁定的 build group，sdist 采用源码清单并检查本地资产泄露。`scripts/check_provider.py --run` 与真实模型业务评测保持显式，计数异常/超时与协议状态分别判断。命令及证据见 [交付说明](docs/delivery.md)。
 - 真实 MySQL 集成测试默认跳过；在本地合成数据与白名单准备好后，使用 `DB_AGENT_MYSQL_INTEGRATION=1 uv run pytest tests/test_mysql_integration.py tests/test_mysql_query.py -q`。测试不创建数据；固定写权限探针使用零行条件并回滚，不能替换为真实写入。业务结果的固定预期值由 fixture 独立推导，不以重复执行候选 SQL 作为基准。
 - 事务与元数据锁集成测试单独使用 `DB_AGENT_MYSQL_DDL_INTEGRATION=1 uv run pytest tests/test_mysql_query_isolation.py -q`。此开关允许测试在固定本地 Compose 的 db_agent 库创建、修改并清理独有随机表，用于核对 EXPLAIN 持锁与对象变化后的拒绝；不改原有三个业务表，不能把目标限制改成任意数据源。
 - 纯文档改动检查事实、相对链接、命令有效性和 `git diff --check`，不为凑测试数量增加镜像实现的测试。
