@@ -31,6 +31,7 @@ from db_agent.config import (
 from db_agent.conversation_context import conversation_prompt
 from db_agent.conversations import ConversationStore, now, source_scope
 from db_agent.db import DatabaseError, MetadataConnector
+from db_agent.knowledge import KnowledgeDraft, KnowledgeStore
 from db_agent.presentation import has_complete_query_results
 from db_agent.query import QueryService
 from db_agent.records import RunRecord
@@ -65,6 +66,16 @@ class LoginInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     username: str = Field(strict=True, min_length=1, max_length=32)
     password: str = Field(strict=True, min_length=1, max_length=128)
+
+
+class ConfirmInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    digest: str = Field(strict=True, pattern=r"^[a-f0-9]{64}$")
+
+
+class RevokeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(strict=True, min_length=1, max_length=500)
 
 
 class TitleInput(BaseModel):
@@ -131,24 +142,32 @@ class WebRuntime:
                 db_settings = db_settings.model_copy(update={"allowed_tables":
                                                             tuple(identity.allowed_tables)})
             guard = service.authorize if service else None
-            self.connector = MetadataConnector(db_settings, authorization_check=guard)
             self.scope = source_scope(db_settings)
             if service:
                 self.scope = hashlib.sha256(json.dumps([
                     self.scope, identity.username, service.generation,
                 ]).encode()).hexdigest()
+            self.connector = MetadataConnector(
+                db_settings, authorization_check=guard,
+                knowledge_scope=self.scope if service else None,
+            )
             self.model_connector = MetadataConnector(
                 db_settings.model_copy(update={"allowed_tables": tuple(identity.model_tables)})
                 if identity else db_settings, authorization_check=guard,
+                knowledge_scope=self.scope if service else None,
             )
-            self.analysis = load_analysis_settings()
-            self.query = load_query_settings()
+            self.analysis = service.analysis if service else load_analysis_settings()
+            self.query = service.query if service else load_query_settings()
         except ConfigurationError:
+            if service:
+                raise
             self.connector = None
             self.scope = "unconfigured"
             self.database_error = "请先在项目 .env 中完成数据库配置，再重启 Web 服务。"
         try:
-            self.settings = load_settings()
+            self.settings = service.settings if service else load_settings()
+            if self.settings is None:
+                raise ConfigurationError("model is not configured")
         except ConfigurationError:
             self.model_error = "请先在项目 .env 中完成模型配置，再重启 Web 服务。"
 
@@ -304,6 +323,8 @@ class WebRuntime:
                         - len(exc.observation.queries),
                     ),
                 )
+        except DatabaseError as exc:
+            run.update(status="failed", error={"code": exc.code, "message": exc.message})
         except Exception:
             run.update(
                 status="failed",
@@ -336,6 +357,8 @@ class WebService:
         self.store = ConversationStore(store_path)
         self.identity_path = identity_path
         self.sessions = Sessions()
+        self.login_lock = asyncio.Lock()
+        self.knowledge = KnowledgeStore()
         self.runtimes: dict[str, WebRuntime] = {}
         self.generation = ""
         self.fingerprint = ""
@@ -348,15 +371,23 @@ class WebService:
     def refresh(self):
         try:
             db_settings = load_database_settings()
+            analysis = load_analysis_settings()
+            query = load_query_settings()
             identities = read_identities(self.identity_path, db_settings.allowed_tables)
             try:
                 settings = load_settings()
                 model = settings.model_dump(mode="json", exclude={"api_key"})
+                model["credential_revision"] = hashlib.sha256(
+                    settings.api_key.get_secret_value().encode(),
+                ).hexdigest()
             except ConfigurationError:
                 model = None
+                settings = None
             fingerprint = hashlib.sha256(json.dumps([
                 identities.model_dump(mode="json"),
                 db_settings.model_dump(mode="json", exclude={"password"}), model,
+                hashlib.sha256(db_settings.password.get_secret_value().encode()).hexdigest(),
+                analysis.model_dump(mode="json"), query.model_dump(mode="json"),
             ], sort_keys=True).encode()).hexdigest()
             error = None
         except ConfigurationError:
@@ -382,6 +413,9 @@ class WebService:
         if error:
             raise ConfigurationError(error)
         self.db_settings = db_settings
+        self.settings = settings
+        self.analysis = analysis
+        self.query = query
         self.identities = identities
 
     def authorize(self):
@@ -396,6 +430,9 @@ class WebService:
         return next(user for user in self.identities.users if user.username == session.username)
 
     def runtime(self, session):
+        self.authorize()
+        if session != _session.get():
+            raise DatabaseError("PERMISSION_DENIED", "登录状态不一致。")
         key = f"{self.generation}:{session.username}"
         if key not in self.runtimes:
             self.runtimes[key] = WebRuntime(
@@ -494,7 +531,8 @@ def create_app(
             except (ConfigurationError, OSError, sqlite3.Error):
                 return _error("ACCESS_CONFIGURATION", "Web 接入配置不可用，请联系本机管理员。", 503)
             session = service.sessions.get(request.cookies.get(COOKIE), service.generation)
-            if protected and session is None:
+            if protected and (session is None or
+                              request.headers.get("x-db-agent-session") != session.key):
                 return _error("AUTH_REQUIRED", "登录已失效，请重新登录。", 401)
         context = _session.set(session)
         try:
@@ -543,7 +581,7 @@ def create_app(
         return request.app.state.service.runtime(_session.get())
 
     def session_response(service, session):
-        if session is None:
+        if not service.sessions.valid(session, service.generation):
             return {"authenticated": False, "model_boundary": MODEL_BOUNDARY}
         return {
             "authenticated": True, "session_id": session.key,
@@ -560,10 +598,11 @@ def create_app(
     async def login(payload: LoginInput, request: Request):
         service = request.app.state.service
         generation = service.generation
-        token, code = await asyncio.to_thread(
-            service.sessions.login, payload.username, payload.password,
-            service.identities.users, generation,
-        )
+        async with service.login_lock:
+            token, code = await asyncio.to_thread(
+                service.sessions.login, payload.username, payload.password,
+                service.identities.users, generation,
+            )
         service.refresh()
         if generation != service.generation:
             return _error("AUTH_REQUIRED", "授权配置已变更，请重新登录。", 401)
@@ -601,7 +640,8 @@ def create_app(
             "model_error": state.model_error,
             "read_only": True,
             "active_run_id": next(iter(state.tasks), None),
-            "identity": session_response(request.app.state.service, _session.get())["identity"],
+            "identity": {**state.identity.public(),
+                         "authorization_version": _session.get().generation},
             "model_boundary": MODEL_BOUNDARY,
         }
 
@@ -665,10 +705,10 @@ def create_app(
             raise HTTPException(409, "已有任务正在运行，请等待完成或先停止它。")
         if not state.connector:
             raise HTTPException(503, state.database_error)
-        if payload.mode == "chat" and state.settings is None:
-            raise HTTPException(503, state.model_error)
         if payload.mode == "chat" and not state.identity.model_enabled:
             raise HTTPException(403, "当前身份未允许使用模型，请选择 SQL 查询或诊断。")
+        if payload.mode == "chat" and state.settings is None:
+            raise HTTPException(503, state.model_error)
         if not payload.prompt.strip() or len(payload.prompt.encode()) > 16384:
             raise HTTPException(422, "请输入问题或 SQL，长度不能超过 16 KiB。")
         previous_requests = state.store.history(conversation_id) if payload.mode == "chat" else []
@@ -766,6 +806,50 @@ def create_app(
         if not state.connector:
             raise HTTPException(503, state.database_error)
         return await state.connector.describe_table(table)
+
+    def public_knowledge(item):
+        return {key: value for key, value in item.items() if key != "scope"}
+
+    @app.get("/api/knowledge")
+    async def list_knowledge(request: Request):
+        state = runtime(request)
+        return {"knowledge": [public_knowledge(item) for item in
+                              state.service.knowledge.list(state.connector.knowledge_scope)]}
+
+    @app.post("/api/knowledge", status_code=201)
+    async def create_knowledge(payload: KnowledgeDraft, request: Request):
+        state = runtime(request)
+        return public_knowledge(state.service.knowledge.create(
+            payload.model_dump_json().encode(), state.connector, state.analysis,
+        ))
+
+    @app.get("/api/knowledge/{identifier}")
+    async def get_knowledge(identifier: str, request: Request):
+        state = runtime(request)
+        return public_knowledge(state.service.knowledge.get(
+            identifier, state.connector.knowledge_scope,
+        ))
+
+    @app.post("/api/knowledge/{identifier}/confirm")
+    async def confirm_knowledge(identifier: str, payload: ConfirmInput, request: Request):
+        state = runtime(request)
+        item = state.service.knowledge.get(identifier, state.connector.knowledge_scope)
+        # Fingerprint the same authorized metadata view that the model will use.
+        # Narrower model tables can omit foreign keys to direct-query-only tables.
+        connector = state.model_connector if (
+            state.identity.model_enabled
+            and set(item["payload"]["tables"]) <= set(state.identity.model_tables)
+        ) else state.connector
+        return public_knowledge(await state.service.knowledge.confirm(
+            identifier, payload.digest, connector, state.analysis,
+        ))
+
+    @app.post("/api/knowledge/{identifier}/revoke")
+    async def revoke_knowledge(identifier: str, payload: RevokeInput, request: Request):
+        state = runtime(request)
+        return public_knowledge(state.service.knowledge.revoke(
+            identifier, state.connector.knowledge_scope, payload.reason,
+        ))
 
     if (static_dir / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=static_dir / "assets"), name="assets")

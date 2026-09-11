@@ -3,6 +3,7 @@ import type { FormEvent, ReactNode } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  BookOpen,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -14,6 +15,7 @@ import {
   FileSearch,
   History,
   LoaderCircle,
+  LogOut,
   Menu,
   MessageSquare,
   Moon,
@@ -35,10 +37,13 @@ import hljs from 'highlight.js/lib/core';
 import sql from 'highlight.js/lib/languages/sql';
 import { api, message } from './api';
 import ResultDelivery from './ResultDelivery';
+import AuthGate from './AuthGate';
+import KnowledgePanel from './KnowledgePanel';
 import type {
   AppStatus,
   Artifact,
   Conversation,
+  Identity,
   QueryResult,
   Report,
   Run,
@@ -419,10 +424,10 @@ function RunMessage({
     <article className="run-message">
       <div className="user-message">
         <div>
-          {run.mode === 'analyze' && (
+          {run.mode !== 'chat' && (
             <span className="mode-badge">
               <FileSearch size={12} />
-              仅诊断 SQL
+              {run.mode === 'query' ? '直接查询 SQL' : '仅诊断 SQL'}
             </span>
           )}
           <p>{run.prompt}</p>
@@ -665,6 +670,24 @@ function SchemaDrawer({ onClose }: { onClose: () => void }) {
 }
 
 export default function App() {
+  return (
+    <AuthGate>
+      {(identity, boundary, logout) => (
+        <Workspace identity={identity} boundary={boundary} logout={logout} />
+      )}
+    </AuthGate>
+  );
+}
+
+function Workspace({
+  identity,
+  boundary,
+  logout,
+}: {
+  identity: Identity;
+  boundary: string;
+  logout: () => void;
+}) {
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -672,12 +695,14 @@ export default function App() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [draft, setDraft] = useState('');
-  const [mode, setMode] = useState<Run['mode']>('chat');
+  const [mode, setMode] = useState<Run['mode']>(identity.model_enabled ? 'chat' : 'query');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [schemaOpen, setSchemaOpen] = useState(false);
+  const [identityOpen, setIdentityOpen] = useState(false);
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [dialog, setDialog] = useState<'rename' | 'delete' | null>(null);
   const [dialogTarget, setDialogTarget] = useState<Conversation | null>(null);
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width:800px)').matches);
@@ -976,7 +1001,8 @@ export default function App() {
     loadingConversation ||
     !!currentRun ||
     !status?.database_configured ||
-    (mode === 'chat' && (!status.model_configured || !!conversation?.context_paused));
+    (mode === 'chat' &&
+      (!identity.model_enabled || !status.model_configured || !!conversation?.context_paused));
   return (
     <div className="app-shell">
       {sidebarOpen && (
@@ -1059,13 +1085,26 @@ export default function App() {
             <div className="sidebar-note">{search ? '没有匹配的对话' : '你的对话将保存在这里'}</div>
           )}
         </nav>
+        <button
+          className="knowledge-trigger secondary-button"
+          onClick={() => setKnowledgeOpen(true)}
+        >
+          <BookOpen size={16} />
+          业务知识
+        </button>
         <footer className="sidebar-footer">
           <span className="workspace-icon">
             <Database size={17} />
           </span>
           <div>
-            <strong>本地工作区</strong>
-            <span>历史记录保存在本机</span>
+            <button
+              className="identity-button"
+              onClick={() => setIdentityOpen(true)}
+              aria-label="查看当前身份与权限"
+            >
+              <strong>{identity.display_name}</strong>
+              <span>{identity.username} · 查看权限</span>
+            </button>
           </div>
           <button
             className="icon-button"
@@ -1122,6 +1161,9 @@ export default function App() {
               {status?.database || '未配置数据库'}
             </span>
             <span className="readonly-badge">只读</span>
+            <button className="icon-button" aria-label="退出登录" onClick={logout} title="退出登录">
+              <LogOut size={17} />
+            </button>
             <button
               className="secondary-button schema-trigger"
               onClick={() => setSchemaOpen(true)}
@@ -1165,13 +1207,15 @@ export default function App() {
                   <Database size={27} />
                 </span>
                 <h2>今天想查询什么？</h2>
-                <p>用自然语言查询数据，或检查一段 SQL。</p>
+                <p>
+                  {identity.model_enabled
+                    ? '用自然语言或 SQL 查询数据，或检查执行计划。'
+                    : '使用 SQL 查询获准数据，或检查执行计划。'}
+                </p>
                 <div className="starter-grid">
                   <button
                     onClick={() => {
-                      setMode('chat');
-                      setDraft('当前有哪些我可以查询的数据表？');
-                      inputRef.current?.focus();
+                      setSchemaOpen(true);
                     }}
                   >
                     <Table2 size={20} />
@@ -1180,14 +1224,18 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => {
-                      setMode('chat');
+                      setMode(identity.model_enabled ? 'chat' : 'query');
                       setDraft('');
                       inputRef.current?.focus();
                     }}
                   >
                     <MessageSquare size={20} />
                     <strong>查询业务数据</strong>
-                    <span>描述时间范围、指标和筛选条件</span>
+                    <span>
+                      {identity.model_enabled
+                        ? '描述时间范围、指标和筛选条件'
+                        : '提交完整 SELECT，不调用模型'}
+                    </span>
                   </button>
                   <button
                     onClick={() => {
@@ -1291,11 +1339,19 @@ export default function App() {
           <form className="composer" onSubmit={send}>
             <textarea
               ref={inputRef}
-              aria-label={mode === 'chat' ? '输入数据问题' : '输入要诊断的 SQL'}
+              aria-label={
+                mode === 'chat'
+                  ? '输入数据问题'
+                  : mode === 'query'
+                    ? '输入要执行的 SQL'
+                    : '输入要诊断的 SQL'
+              }
               placeholder={
                 mode === 'chat'
                   ? '描述数据问题，写清时间范围和统计口径…'
-                  : '粘贴完整 MySQL SQL，仅诊断，不执行…'
+                  : mode === 'query'
+                    ? '粘贴完整只读 SELECT，预检通过后执行，不调用模型…'
+                    : '粘贴完整 MySQL SQL，仅诊断，不执行…'
               }
               value={draft}
               maxLength={16384}
@@ -1312,11 +1368,23 @@ export default function App() {
               <div className="mode-switch" aria-label="请求方式">
                 <button
                   type="button"
+                  disabled={!identity.model_enabled}
+                  title={
+                    !identity.model_enabled ? '当前身份未获准使用模型' : '在模型获准范围内查询'
+                  }
                   aria-pressed={mode === 'chat'}
                   onClick={() => setMode('chat')}
                 >
                   <MessageSquare size={14} />
                   智能查询
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={mode === 'query'}
+                  onClick={() => setMode('query')}
+                >
+                  <Database size={14} />
+                  直接查询 SQL
                 </button>
                 <button
                   type="button"
@@ -1352,14 +1420,55 @@ export default function App() {
           </form>
           <div className="composer-hint">
             <span>
-              {conversation?.context_turns
+              {mode === 'chat' && conversation?.context_turns
                 ? `可沿用 ${conversation.context_turns} 轮成功查询的口径`
-                : '查询前自动检查权限与 SQL 风险'}
+                : mode === 'chat'
+                  ? '仅使用模型获准表；原文与结构将发给配置模型'
+                  : '不调用模型，不沿用历史条件；自动检查权限与 SQL 风险'}
             </span>
             <span>Enter 发送 · Shift + Enter 换行</span>
           </div>
         </div>
       </main>
+      {knowledgeOpen && (
+        <Dialog
+          title="业务知识"
+          className="knowledge-dialog"
+          onClose={() => setKnowledgeOpen(false)}
+        >
+          <KnowledgePanel
+            identity={identity}
+            canInsert={!sending && !globallyBusy}
+            onInsert={(reference) => {
+              setDraft((current) => `${current}${current.trim() ? '\n' : ''}${reference}`);
+              setMode('chat');
+              setKnowledgeOpen(false);
+              setSidebarOpen(false);
+              inputRef.current?.focus();
+            }}
+          />
+        </Dialog>
+      )}
+      {identityOpen && (
+        <Dialog title="当前身份与权限" onClose={() => setIdentityOpen(false)}>
+          <p>
+            <strong>{identity.display_name}</strong> · {identity.username}
+          </p>
+          <h3>数据访问范围</h3>
+          <p className="scope-tables">{identity.allowed_tables.join('、') || '无授权表'}</p>
+          <h3>模型使用范围</h3>
+          <p>
+            {identity.model_enabled
+              ? '允许使用智能查询'
+              : '当前身份禁用智能查询；可使用直接 SQL 查询与诊断。'}
+          </p>
+          <p className="scope-tables">{identity.model_tables.join('、') || '无模型授权表'}</p>
+          <p className="muted small">{boundary}</p>
+          <p className="muted small">
+            表权限包含支持的列与行。智能查询仅使用模型获准表；直接查询、诊断与表结构使用数据访问范围。历史、结果与业务知识按身份和当前配置隔离。
+          </p>
+        </Dialog>
+      )}
       {schemaOpen && <SchemaDrawer onClose={() => setSchemaOpen(false)} />}
       {dialog && (
         <Dialog

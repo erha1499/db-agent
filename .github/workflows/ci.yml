@@ -123,6 +123,8 @@ jobs:
         env:
           DB_AGENT_MYSQL_DDL_INTEGRATION: "1"
         run: uv run --locked pytest tests/test_mysql_query_isolation.py -q
+      - name: Real two-identity HTTP and database acceptance (no model)
+        run: uv run --locked python scripts/evaluate_web_identities.py --run
       - name: Stop disposable service (keep volume until runner disposal)
         if: always()
         run: docker compose stop mysql

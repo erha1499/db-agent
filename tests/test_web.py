@@ -30,6 +30,7 @@ class TestClient(BaseTestClient):
         result = super().__enter__()
         response = self.post("/api/auth/login", json={"username": "alice", "password": PASSWORD})
         assert response.status_code == 200, response.text
+        self.headers["X-DB-Agent-Session"] = response.json()["session_id"]
         return result
 
 

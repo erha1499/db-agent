@@ -3,16 +3,22 @@
 import asyncio
 import json
 import time
+from collections import deque
 from dataclasses import replace
-from threading import Event
+from threading import Event, Thread
 
 import pytest
 from fastapi.testclient import TestClient
+from test_agent import stub_server as stub_server
+from test_agent import tool_completion
+from test_knowledge import document
+from test_query_connector import PLAN, QueryConnection
 from test_web import create, result, saved_delivery, start, terminal
 
 from db_agent import web
 from db_agent.config import AnalysisSettings, ConfigurationError, DatabaseSettings, Settings
 from db_agent.db import DatabaseError, MetadataConnector
+from db_agent.knowledge import KnowledgeContext
 from db_agent.web_identity import COOKIE, password_hash, read_identities
 
 HEADERS = {"X-DB-Agent-Client": "web"}
@@ -23,6 +29,7 @@ HASH = password_hash(PASSWORD)
 def login(client, username="alice"):
     response = client.post("/api/auth/login", json={"username": username, "password": PASSWORD})
     assert response.status_code == 200, response.text
+    client.headers["X-DB-Agent-Session"] = response.json()["session_id"]
     return response.json()
 
 
@@ -99,6 +106,224 @@ def test_cookie_rotation_failure_logout_expiry_and_private_status(setup):
     assert client.post("/api/auth/logout", json={}).status_code == 200
     assert not client.cookies.get(COOKIE)
     assert client.get("/api/status").status_code == 401
+
+
+def test_stale_page_session_header_cannot_write_under_new_cookie(setup):
+    _, client, _, _ = setup
+    alice = login(client)
+    login(client, "bob")
+    response = client.post("/api/conversations", json={}, headers={
+        "X-DB-Agent-Session": alice["session_id"],
+    })
+    assert response.status_code == 401
+    assert client.get("/api/conversations").json()["conversations"] == []
+    assert client.get("/api/status", headers={"X-DB-Agent-Session": ""}).status_code == 401
+
+
+def test_policy_change_between_middleware_and_handler_prevents_history_write(setup, monkeypatch):
+    app, client, path, data = setup
+    login(client)
+    entered, resume = Event(), Event()
+    route = next(route for route in app.routes
+                 if getattr(route, "path", None) == "/api/conversations"
+                 and "POST" in route.methods)
+    original = route.dependant.call
+
+    async def gated(**kwargs):
+        entered.set()
+        await asyncio.to_thread(resume.wait, 2)
+        return await original(**kwargs)
+
+    monkeypatch.setattr(route.dependant, "call", gated)
+    responses = []
+    thread = Thread(target=lambda: responses.append(client.post("/api/conversations", json={})))
+    thread.start()
+    try:
+        assert entered.wait(2)
+        data["users"][0]["allowed_tables"] = ["orders"]
+        save(path, data)
+        assert client.get("/api/auth/session").json()["authenticated"] is False
+    finally:
+        resume.set()
+        thread.join(timeout=3)
+    assert responses[0].status_code == 401
+    with app.state.service.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 0
+    assert not app.state.service.runtimes
+
+
+def test_model_contexts_are_identity_specific_and_revoke_stops_next_http(
+    setup, monkeypatch, stub_server,
+):
+    _, client, path, data = setup
+    monkeypatch.setattr(web, "load_settings", lambda: Settings(
+        _env_file=None, api_key="synthetic-only-model-secret", model="synthetic",
+        openai_base_url=stub_server["base_url"],
+    ))
+    data["users"][1].update(model_enabled=True, model_tables=["customers"])
+    save(path, data)
+    for username, allowed, excluded in [("alice", "orders", "customers"),
+                                        ("bob", "customers", "orders")]:
+        login(client, username)
+        run = terminal(client, start(client, create(client), "说明可用表").json()["id"])
+        assert run["status"] == "completed"
+        messages = json.dumps(stub_server["requests"][-1]["body"]["messages"])
+        assert allowed in messages and excluded not in messages
+        assert "secret" not in messages and '"rows"' not in messages
+    login(client)
+    stub_server["response"] = tool_completion(("describe_table", {"table": "orders"}))
+
+    async def describe(connector, table):
+        data["users"][0]["enabled"] = False
+        save(path, data)
+        return {"table": table, "columns": [], "indexes": [], "foreign_keys": []}
+
+    monkeypatch.setattr(MetadataConnector, "describe_table", describe)
+    start(client, create(client), "查看结构再说明")
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if client.get("/api/auth/session").json()["authenticated"] is False:
+            break
+        time.sleep(0.02)
+    assert len(stub_server["requests"]) == 3
+
+
+def test_session_status_user_removed_after_middleware_returns_logged_out(setup, monkeypatch):
+    app, client, path, data = setup
+    login(client)
+    route = next(route for route in app.routes
+                 if getattr(route, "path", None) == "/api/auth/session")
+    original = route.dependant.call
+
+    async def removed(**kwargs):
+        data["users"] = data["users"][1:]
+        save(path, data)
+        app.state.service.refresh()
+        return await original(**kwargs)
+
+    monkeypatch.setattr(route.dependant, "call", removed)
+    response = client.get("/api/auth/session")
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is False
+
+
+def test_knowledge_confirmation_uses_the_model_visible_foreign_key_view(setup, monkeypatch):
+    _, client, _, _ = setup
+    login(client)
+
+    async def describe(connector, table):
+        connector._authorize()
+        return {"table": table, "columns": [{"name": "id", "type": "bigint"}],
+                "indexes": [], "foreign_keys": [
+                    {"name": "fk_customer", "columns": ["customer_id"],
+                     "referenced_table": "customers", "referenced_columns": ["id"]},
+                ] if "customers" in connector.authorized_table_candidates else [],
+                "foreign_keys_scope": list(connector.authorized_table_candidates)}
+
+    async def agent(prompt, settings, connector, *args, **kwargs):
+        context = KnowledgeContext([item["id"]], connector, AnalysisSettings())
+        context.validate({"orders": await connector.describe_table("orders")})
+        return result()
+
+    monkeypatch.setattr(MetadataConnector, "describe_table", describe)
+    item = client.post("/api/knowledge", json=document()).json()
+    response = client.post(f'/api/knowledge/{item["id"]}/confirm', json={"digest": item["digest"]})
+    assert response.status_code == 200
+    monkeypatch.setattr(web, "run_agent_observed", agent)
+    run = terminal(client, start(client, create(client), "核对授权内知识").json()["id"])
+    assert run["status"] == "completed"
+
+
+@pytest.mark.parametrize("phase", ["before", "after"])
+def test_explain_guard_vetoes_dispatch_or_discards_received_plan(phase):
+    revoked = phase == "before"
+
+    def authorize():
+        if revoked:
+            raise DatabaseError("PERMISSION_DENIED", "revoked")
+
+    async def after_dispatch(cursor, query):
+        nonlocal revoked
+        revoked = True
+
+    connector = MetadataConnector(DatabaseSettings(_env_file=None, password="synthetic",
+                                  allowed_tables=["orders"]), authorization_check=authorize)
+    connection = QueryConnection(before_query=after_dispatch)
+    connection.responses = deque([[{"EXPLAIN": json.dumps(PLAN)}]])
+
+    async def probe():
+        with pytest.raises(DatabaseError, match="revoked"):
+            await connector._read_plan(connection, "SELECT id FROM orders", AnalysisSettings())
+
+    asyncio.run(probe())
+    assert len(connection.queries) == (0 if phase == "before" else 1)
+
+
+def test_knowledge_same_table_users_are_isolated_and_restore_does_not_resurrect(
+    setup, monkeypatch,
+):
+    _, client, path, data = setup
+    data["users"][1].update(allowed_tables=["orders", "customers"], model_enabled=True,
+                            model_tables=["orders"])
+    save(path, data)
+
+    async def describe(connector, table):
+        connector._authorize()
+        connector.validate_table(table)
+        return {"database": "db_agent", "table": table, "columns": [
+            {"name": "id", "type": "bigint", "nullable": "NO"}], "indexes": [],
+                "foreign_keys": [], "foreign_keys_scope": {"database": "db_agent"}}
+
+    monkeypatch.setattr(MetadataConnector, "describe_table", describe)
+    login(client)
+    assert client.get("/api/knowledge").json() == {"knowledge": []}
+    draft = client.post("/api/knowledge", json=document()).json()
+    identifier = draft["id"]
+    target = f"/api/knowledge/{identifier}"
+    assert "scope" not in draft
+    assert client.post(target + "/confirm", json={"digest": "0" * 64}).status_code == 400
+    assert client.post(target + "/confirm", json={"digest": draft["digest"]}
+                       ).json()["state"] == "confirmed"
+    login(client, "bob")
+    assert client.get("/api/knowledge").json() == {"knowledge": []}
+    assert client.get(target).status_code == 400
+    assert client.post(target + "/revoke", json={"reason": "steal"}).status_code == 400
+    assert client.post(target + "/confirm", json={"digest": draft["digest"]}
+                       ).status_code == 400
+    conversation = create(client)
+    # Actual agent preparation rejects another user's knowledge before HTTP.
+    started = start(client, conversation, f"[[knowledge:{identifier}]] 查询")
+    run = terminal(client, started.json()["id"])
+    assert run["status"] == "failed" and run["error"]["code"] == "KNOWLEDGE_UNAVAILABLE"
+    assert not run["queries"]
+    login(client)
+    assert client.get(target).json()["state"] == "confirmed"
+    original = json.loads(json.dumps(data))
+    data["users"][0]["model_tables"] = []
+    save(path, data)
+    login(client)
+    assert client.get(target).status_code == 400
+    save(path, original)
+    login(client)
+    assert client.get(target).status_code == 400
+
+
+def test_knowledge_outside_model_tables_never_reaches_model(setup, monkeypatch):
+    _, client, _, _ = setup
+    login(client)
+
+    async def describe(connector, table):
+        connector.validate_table(table)
+        return {"table": table, "columns": [], "indexes": [], "foreign_keys": []}
+
+    monkeypatch.setattr(MetadataConnector, "describe_table", describe)
+    draft = client.post("/api/knowledge", json=document(tables=["customers"])).json()
+    target = f'/api/knowledge/{draft["id"]}'
+    assert client.post(target + "/confirm", json={"digest": draft["digest"]}).status_code == 200
+    run = terminal(client, start(client, create(client),
+                                 f'[[knowledge:{draft["id"]}]] 查询').json()["id"])
+    assert run["status"] == "failed" and run["error"]["code"] == "PERMISSION_DENIED"
+    assert not run["queries"]
 
 
 def test_identity_history_results_export_and_cancel_isolation(setup, monkeypatch):
@@ -272,3 +497,16 @@ def test_login_rate_limit_is_bounded_and_not_a_user_existence_oracle(setup):
                            ).status_code == 401
     assert client.post("/api/auth/login", json={"username": "alice", "password": PASSWORD}
                        ).status_code == 429
+
+
+def test_model_denial_precedes_missing_provider_configuration(setup, monkeypatch):
+    _, client, _, _ = setup
+
+    def missing():
+        raise ConfigurationError("not configured")
+
+    monkeypatch.setattr(web, "load_settings", missing)
+    login(client, "bob")
+    conversation = create(client)
+    assert start(client, conversation).status_code == 403
+    assert start(client, conversation, "SELECT id FROM orders", mode="query").status_code == 202

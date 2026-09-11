@@ -143,6 +143,11 @@ class RuntimeMiddleware(AgentMiddleware):
         ) if connector else None
 
     def _claim_model_call(self) -> int:
+        # Web's trusted connector may veto expired/revoked access before every
+        # model HTTP, including isolated intent extraction and semantic review.
+        authorize = getattr(self.connector, "_authorize", None)
+        if authorize:
+            authorize()
         # The framework counts its own model nodes; this counter also includes
         # isolated semantic reviews before any HTTP request is dispatched.
         if self.model_calls >= self.model_limit:

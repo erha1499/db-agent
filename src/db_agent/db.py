@@ -45,10 +45,12 @@ class MetadataConnector:
 
     def __init__(
         self, settings: DatabaseSettings, *, authorization_check: Callable[[], None] | None = None,
+        knowledge_scope: str | None = None,
     ):
         self._settings = settings.model_copy(deep=True)
         self._lock = asyncio.Lock()
         self._authorization_check = authorization_check
+        self._knowledge_scope = knowledge_scope
 
     def _authorize(self):
         if self._authorization_check:
@@ -60,7 +62,10 @@ class MetadataConnector:
 
     @property
     def knowledge_scope(self) -> str:
-        """Opaque source/account/allowlist binding; never exposes credentials."""
+        """Trusted Web principal scope, or local CLI source/account/allowlist scope."""
+        self._authorize()
+        if self._knowledge_scope is not None:
+            return self._knowledge_scope
         from db_agent.conversations import source_scope
 
         return source_scope(self._settings)
@@ -264,9 +269,11 @@ class MetadataConnector:
 
     async def _read_plan(self, connection, sql: str, limits: AnalysisSettings) -> dict:
         cursor = await connection.cursor()
+        self._authorize()
         # None avoids driver %-interpolation of literal SQL LIKE patterns.
         await cursor.execute("EXPLAIN FORMAT=JSON " + sql, None)
         row = await cursor.fetchone()
+        self._authorize()
         if not isinstance(row, dict) or set(row) != {"EXPLAIN"}:
             raise DatabaseError("INVALID_PLAN", "数据库未返回支持的 JSON 执行计划")
         raw = row["EXPLAIN"]

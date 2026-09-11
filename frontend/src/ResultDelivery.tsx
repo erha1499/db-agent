@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BarChart3, Download, LoaderCircle, TrendingUp } from 'lucide-react';
-import { api, message } from './api';
+import { api, apiBlob, message } from './api';
 import type { AnalysisSelection, ResultAnalysis, ResultSnapshot } from './types';
 
 const numericTypes = new Set([
@@ -177,16 +177,11 @@ export default function ResultDelivery({ path }: { path: string }) {
     setError('');
     setDownloaded('');
     try {
-      const response = await fetch(`/api${path}/export`, {
+      const blob = await apiBlob(`${path}/export`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-DB-Agent-Client': 'web' },
         body: JSON.stringify({ format, analysis: selection }),
       });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        throw new Error(payload?.error?.message || '下载失败，请检查本机服务后重试。');
-      }
-      const url = URL.createObjectURL(await response.blob());
+      const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
       anchor.download = `db-agent-result-${snapshot!.result_id}.${format}`;
