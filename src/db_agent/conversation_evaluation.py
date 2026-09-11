@@ -168,13 +168,21 @@ def source_identity() -> dict:
     return {"files": hashes, "sha256": _json_hash(hashes)}
 
 
-def _verify_freeze(manifest: dict, source: dict) -> None:
+def _verify_freeze(manifest: dict, source: dict, *, regression: bool = False) -> None:
     provenance = manifest["provenance"]
     if (
         not isinstance(provenance, dict)
         or provenance.get("production_freeze_status") != "frozen"
         or not isinstance(provenance.get("product_source_snapshot"), dict)
-        or provenance["product_source_snapshot"].get("sha256") != source["sha256"]
+        or (not regression and (
+            provenance["product_source_snapshot"].get("sha256") != source["sha256"]
+        ))
+        or (regression and (
+            not isinstance(provenance["product_source_snapshot"].get("files"), dict)
+            or not provenance["product_source_snapshot"]["files"]
+            or provenance["product_source_snapshot"].get("sha256")
+            != _json_hash(provenance["product_source_snapshot"]["files"])
+        ))
         or provenance.get("business_context_sha256") != manifest["business_context_sha256"]
         or any(provenance.get(name) != value for name, value in manifest["content_hashes"].items())
     ):
@@ -283,16 +291,19 @@ async def evaluate(
     query: QuerySettings,
     model: Settings | None = None,
     path: Path | None = None,
+    regression: bool = False,
 ) -> dict:
     if mode not in {"sql", "agent"} or type(repeat) is not int or not 1 <= repeat <= 3:
         raise EvaluationError("会话评测 mode 必须为 sql/agent，repeat 必须为 1 至 3。")
     if mode == "agent" and model is None:
         raise EvaluationError("Agent 会话评测需要明确模型配置。")
+    if type(regression) is not bool:
+        raise EvaluationError("会话回归必须由明确的布尔参数选择。")
     path = CASE_FILE if path is None else path
     manifest, conversations = load_cases(split, path)
     context = manifest.pop("business_context")
     source = source_identity()
-    _verify_freeze(manifest, source)
+    _verify_freeze(manifest, source, regression=regression)
     scoped = validate_environment(
         database,
         analysis,
@@ -304,9 +315,16 @@ async def evaluate(
         "suite_version": SUITE_VERSION,
         "mode": mode,
         "split": split,
-        "split_role": "development" if split == "dev" else "held_out_acceptance",
+        "split_role": "exposed_regression" if regression else (
+            "development" if split == "dev" else "held_out_acceptance"
+        ),
+        "regression": regression,
         "repeat": repeat,
-        "preregistered_runs": deepcopy(manifest["provenance"].get("preregistered_runs")),
+        "run_plan": {"mode": mode, "split": split, "repeat": repeat},
+        # Historical registration remains intact in case_manifest.provenance.
+        "preregistered_runs": None if regression else deepcopy(
+            manifest["provenance"].get("preregistered_runs")
+        ),
         "state": "running",
         "case_manifest": manifest,
         "source": source,
@@ -375,6 +393,10 @@ async def evaluate(
             for item in conversations
         ],
     }
+    if regression:
+        report["limitations"].append(
+            "显式复跑已暴露固定用例，非未暴露验收，不代表无偏正确率；原预登记仅为历史来源。"
+        )
     output = PROJECT_ROOT / "outputs/evals" / f"{report['evaluation_id']}.json"
     output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.close(os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
@@ -489,6 +511,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", choices=("sql", "agent"), required=True)
     parser.add_argument("--split", choices=("dev", "holdout"), required=True)
     parser.add_argument("--repeat", type=int, choices=range(1, 4), required=True)
+    parser.add_argument("--regression", action="store_true",
+                        help="显式使用当前源码复跑已暴露冻结案例；非未暴露验收")
     args = parser.parse_args(argv)
     try:
         report = asyncio.run(
@@ -496,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
                 mode=args.mode,
                 split=args.split,
                 repeat=args.repeat,
+                regression=args.regression,
                 database=load_database_settings(),
                 analysis=load_analysis_settings(),
                 query=load_query_settings(),

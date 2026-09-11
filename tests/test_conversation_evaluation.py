@@ -185,22 +185,24 @@ def setup(tmp_path, monkeypatch):
     }
 
 
-def run(setup, mode="agent", repeat=1):
+def run(setup, mode="agent", repeat=1, *, split="dev", regression=False):
     return asyncio.run(
         evaluation.evaluate(
             mode=mode,
-            split="dev",
+            split=split,
             repeat=repeat,
             database=setup["database"],
             analysis=setup["analysis"],
             query=setup["query"],
             model=setup["model"] if mode == "agent" else None,
             path=setup["path"],
+            **({"regression": True} if regression else {}),
         )
     )
 
 
 @pytest.mark.parametrize("mode", ["sql", "agent"])
+@pytest.mark.parametrize("regression", [False, True])
 @pytest.mark.parametrize(
     "change",
     [
@@ -216,7 +218,7 @@ def run(setup, mode="agent", repeat=1):
     ],
 )
 def test_unfrozen_or_tampered_suite_stops_before_session_or_database(
-    setup, monkeypatch, mode, change
+    setup, monkeypatch, mode, regression, change
 ):
     data = setup["document"]
     provenance = data["provenance"]
@@ -243,9 +245,33 @@ def test_unfrozen_or_tampered_suite_stops_before_session_or_database(
     monkeypatch.setattr(evaluation, "ConversationSession", forbidden)
     monkeypatch.setattr(evaluation, "MetadataConnector", forbidden)
     with pytest.raises(evaluation.EvaluationError, match="冻结"):
-        run(setup, mode=mode)
+        run(setup, mode=mode, regression=regression)
     assert setup["state"]["calls"] == [] and setup["state"]["sql_calls"] == []
     assert not (setup["root"] / "outputs/evals").exists()
+
+
+@pytest.mark.parametrize("mode", ["sql", "agent"])
+@pytest.mark.parametrize("split", ["dev", "holdout"])
+def test_regression_requires_opt_in_and_records_current_plan(setup, mode, split):
+    historical = copy.deepcopy(setup["document"]["provenance"])
+    (setup["root"] / "src/db_agent/offline.py").write_text("new synthetic product source\n")
+    with pytest.raises(evaluation.EvaluationError, match="冻结"):
+        run(setup, mode=mode, split=split)
+    assert setup["state"]["calls"] == [] and setup["state"]["sql_calls"] == []
+    report = run(setup, mode=mode, split=split, repeat=3, regression=True)
+    assert report["state"] == "completed" and report["inputs_unchanged"]
+    assert report["split_role"] == "exposed_regression"
+    assert report["regression"] is True
+    assert report["run_plan"] == {"mode": mode, "split": split, "repeat": 3}
+    assert report["preregistered_runs"] is None
+    assert report["case_manifest"]["provenance"] == historical
+    assert report["source"] == evaluation.source_identity()
+    assert report["source"] != historical["product_source_snapshot"]
+    assert report["planned_turns"] == report["passed_turns"] == 27
+    assert any("非未暴露验收" in note for note in report["limitations"])
+    report_path = setup["root"] / "outputs/evals" / f"{report['evaluation_id']}.json"
+    saved = json.loads(report_path.read_text())
+    assert saved == report
 
 
 def test_three_turn_chains_keep_raw_history_and_reset_for_every_repeat(setup):
@@ -278,7 +304,10 @@ def test_three_turn_chains_keep_raw_history_and_reset_for_every_repeat(setup):
     }
 
 
-def test_failed_turn_keeps_dependents_in_denominator_and_calls_real_suspended_session(setup):
+@pytest.mark.parametrize("regression", [False, True])
+def test_failed_turn_keeps_dependents_in_denominator_and_calls_real_suspended_session(
+    setup, regression,
+):
     def fail(result, number):
         if number == 1:
             result.queries[0].report.update(
@@ -291,7 +320,7 @@ def test_failed_turn_keeps_dependents_in_denominator_and_calls_real_suspended_se
             object.__setattr__(result, "answer", render_queries(result.queries))
 
     setup["state"]["behavior"] = fail
-    report = run(setup)
+    report = run(setup, regression=regression)
     first = report["chains"][0]["turns"]
     assert first[0]["categories"] == ["environment"]
     assert [turn["categories"] for turn in first[1:]] == [["dependency"], ["dependency"]]
@@ -340,7 +369,10 @@ def test_incorrect_results_answers_and_contexts_do_not_pass(setup, kind, categor
     assert report["passed_conversations"] < report["planned_conversations"]
 
 
-def test_sql_mode_uses_every_full_reference_without_loading_model(setup, monkeypatch, capsys):
+@pytest.mark.parametrize("regression", [False, True])
+def test_sql_mode_uses_every_full_reference_without_loading_model(
+    setup, monkeypatch, capsys, regression,
+):
     def forbidden(*args, **kwargs):
         pytest.fail("SQL mode loaded model or instantiated a conversation")
 
@@ -352,25 +384,30 @@ def test_sql_mode_uses_every_full_reference_without_loading_model(setup, monkeyp
         ("query", setup["query"]),
     ):
         monkeypatch.setattr(evaluation, f"load_{name}_settings", lambda value=value: value)
-    assert evaluation.main(["--mode", "sql", "--split", "dev", "--repeat", "1"]) == 0
+    if regression:
+        (setup["root"] / "src/db_agent/offline.py").write_text("new synthetic product source\n")
+    args = ["--mode", "sql", "--split", "dev", "--repeat", "1"]
+    assert evaluation.main([*args, *(["--regression"] if regression else [])]) == 0
     assert setup["state"]["calls"] == []
     assert setup["state"]["sql_calls"] == [
         turn["reference_sql"] for c in setup["document"]["conversations"][:3] for turn in c["turns"]
     ]
     report = json.loads(next((setup["root"] / "outputs/evals").glob("*.json")).read_text())
     assert report["model"] is None and report["passed_turns"] == 9
+    assert report["regression"] is regression
     assert "9/9" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("kind,code", [("source", "SOURCE_CHANGED"), ("case", "CASE_CHANGED")])
-def test_changed_inputs_stop_after_preserving_current_evidence(setup, kind, code):
+@pytest.mark.parametrize("regression", [False, True])
+def test_changed_inputs_stop_after_preserving_current_evidence(setup, kind, code, regression):
     def change(result, number):
         if number == 1:
             target = setup["path"] if kind == "case" else setup["root"] / "src/db_agent/offline.py"
             target.write_text(target.read_text() + "\n")
 
     setup["state"]["behavior"] = change
-    report = run(setup)
+    report = run(setup, regression=regression)
     assert report["state"] == "incomplete" and report["failure_code"] == code
     assert not report["inputs_unchanged"]
     assert report["passed_turns"] == report["attempted_turns"] == 1
@@ -379,14 +416,17 @@ def test_changed_inputs_stop_after_preserving_current_evidence(setup, kind, code
     assert len(setup["state"]["calls"]) == 1
 
 
-def test_cancelled_evaluation_keeps_completed_turn_and_marks_remaining_incomplete(setup):
+@pytest.mark.parametrize("regression", [False, True])
+def test_cancelled_evaluation_keeps_completed_turn_and_marks_remaining_incomplete(
+    setup, regression,
+):
     def cancel(result, number):
         if number == 2:
             raise asyncio.CancelledError
 
     setup["state"]["behavior"] = cancel
     with pytest.raises(asyncio.CancelledError):
-        run(setup)
+        run(setup, regression=regression)
     report = json.loads(next((setup["root"] / "outputs/evals").glob("*.json")).read_text())
     assert report["state"] == "incomplete" and report["failure_code"] == "INTERRUPTED"
     assert report["passed_turns"] == 1 and report["failed_turns"] == 8

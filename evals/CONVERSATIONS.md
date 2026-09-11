@@ -31,6 +31,15 @@ SQL 基线共18轮，真实 Agent 开发集9轮、验收集18轮。开发集如�
 
 ## 当前状态
 
+以下数字为首次冻结源码的历史验收。当前源码新增功能后，默认命令会拒绝与历史冻结源码不符的运行；重跑既有题应显式使用回归入口：
+
+```bash
+uv run python scripts/evaluate_conversations.py --mode sql --split dev --repeat 1 --regression
+uv run python scripts/evaluate_conversations.py --mode agent --split holdout --repeat 1 --regression
+```
+
+`--regression` 保留原题、独立预期、字典和冻结声明，登记本次源码、运行计划与 `exposed_regression` 角色。原题/字典变化仍拒绝，运行中源码或输入变化仍停止；失败与依赖停止仍留在本次分母。它不会把旧题重新标成未暴露验收，也不覆盖历史报告。
+
 案例内容、业务字典和产品源码已在首次执行前冻结，独立预期已复核。完整来源逐文件哈希保存在 JSON 的 `provenance.product_source_snapshot`；源码摘要为 `5922709cc2a196a839f9b5e205ddc34015cb30845be6a22c1d51b77ed0e9be80`，冻结后的完整案例文件 SHA256 为 `40173f711ef9752b156820f43ac4a7a6433f62920e6ea68728b63d36ad6a4e1a`。JSON 保留不可变的首次执行前声明，实际运行状态以本节和独立报告为准。
 
 冻结前验证：`DB_AGENT_MYSQL_INTEGRATION=1 uv run pytest -q` 为1380通过、3跳过；跳过项为单独开关的事务/元数据锁测试，另行运行3/3通过。`uv run ruff check .` 与 `git diff --check` 通过。
@@ -57,4 +66,17 @@ SQL 开发集 `6db9afeeaf33455c835860501d2efe2d` 与验收集 `f8c211ad29f0452d8
 
 独立开发 worktree 的 Compose 归属保护会拒绝直接运行管理员核验脚本，因此使用原 Compose 工作目录中经字节核对相同的 `scripts/seed_ecommerce.py --verify-only`，由本 worktree 的 Python 执行。事务/元数据锁的3项测试同理使用原目录中相同测试文件，同时确认 `db_agent.db` 导入的是本 worktree 的产品代码；仅创建和清理测试自身的随机表。未放宽目标保护，原工作目录中的并行 Web 开发未纳入本次提交。
 
-当前没有 CI 工作流，本阶段验证均为本地命令和真实模型/数据库调用。下一步是 TODO 第13步：把必要回归接入CI，继续核对提供方协议、超时和token计数口径；本次结果不代表生产可靠性或任意自然语言语义等价。
+上述首次验收时尚无 CI 工作流，证据均为当时的本地命令和真实模型/数据库调用。后续 TODO13 已接入实际 CI，当前安装与流水线入口见[交付说明](../docs/delivery.md)；历史结果不代表当前源码、生产可靠性或任意自然语言语义等价。
+
+## 2026-09-11 当前源码显式回归入口
+
+最终整合审查复现：在 main `db549ba8e6803737b2f4d35377dcab901c658eb7` 按默认命令重跑会因历史源码不符退出2，未派发查询。新增 `--regression` 后，默认冻结保护保持不变；67项定向测试检查显式选择、角色/来源记录、原题和字典篡改拒绝、运行期间变化停止、取消及失败分母。
+
+首次回归源码摘要为 `8019cc37f41d42cfe78b17bf3aa7da328fa59813591ae73f94d6064259c68a7c`，原案例未修改：
+
+| 命令（均追加 `--regression`） | 本次结果 | 报告ID |
+| --- | --- | --- |
+| `--mode sql --split dev --repeat 1` | 3/3段、9/9轮，未调用模型 | `d2bf0fea6d364674b16b7b13e7e823ca` |
+| `--mode agent --split dev --repeat 1` | 2/3段、8/9轮 | `069ad97fe70d49d1852f6a59e9f202f0` |
+
+两份报告均 `completed`、`inputs_unchanged=true`。Agent跨月比较第三轮在最终复核返回 `SEMANTIC_REVIEW_INVALID`，耗时23048ms，`UNKNOWN/error/not_started`，没有业务结果；四次模型调用仍在原预算内。这是尚未消除的模型协议不稳定，不能写成查数成功或已定位为超时；原失败不回填。其余八轮取得独立预期结果，失败会话要求重置。报告保留在本机忽略的 `outputs/evals`；后续整合源码再次运行须单列来源与全部尝试，不替换此轮成绩。
