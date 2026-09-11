@@ -14,7 +14,7 @@ const numericTypes = new Set([
   'double',
   'year',
 ]);
-const timeTypes = new Set(['date', 'datetime', 'timestamp', 'year']);
+const timeTypes = new Set(['date', 'datetime', 'timestamp', 'timestamptz', 'year']);
 
 function Chart({ analysis }: { analysis: ResultAnalysis }) {
   const points = analysis.points;

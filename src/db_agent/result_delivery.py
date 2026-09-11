@@ -3,7 +3,7 @@
 import json
 import math
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
 from html import escape
 from typing import Literal
@@ -15,7 +15,7 @@ from db_agent.presentation import _visible_text
 NUMERIC_TYPES = frozenset({
     "tinyint", "smallint", "mediumint", "int", "bigint", "decimal", "float", "double", "year",
 })
-TIME_TYPES = frozenset({"date", "datetime", "timestamp", "year"})
+TIME_TYPES = frozenset({"date", "datetime", "timestamp", "timestamptz", "year"})
 MAX_GROUPS = 100
 SCOPE_NOTE = (
     "分析仅针对本次已返回的结果行，仍受原 SQL 的 WHERE / LIMIT 等范围限制；"
@@ -103,7 +103,7 @@ def analyze_result(data: dict, selection: AnalysisInput) -> dict:
     if columns[m]["type"].lower() not in NUMERIC_TYPES:
         raise ValueError("指标必须是数值类型；不会把文本数字猜测为金额。")
     if selection.kind == "trend" and columns[d]["type"].lower() not in TIME_TYPES:
-        raise ValueError("趋势需要 date、datetime、timestamp 或 year 时间列。")
+        raise ValueError("趋势需要 date、datetime、timestamp、timestamptz 或 year 时间列。")
     groups = {}
     # Enough for supported exponents, significant digits and bounded row counts.
     with localcontext() as context:
@@ -122,7 +122,12 @@ def analyze_result(data: dict, selection: AnalysisInput) -> dict:
                             raise ValueError()
                     else:
                         parsed = datetime.fromisoformat(dimension)
-                        if parsed.tzinfo is not None or parsed.isoformat() != dimension:
+                        if parsed.isoformat() != dimension:
+                            raise ValueError()
+                        if kind == "timestamptz":
+                            if parsed.utcoffset() != timedelta(0):
+                                raise ValueError()
+                        elif parsed.tzinfo is not None:
                             raise ValueError()
                 except (TypeError, ValueError):
                     raise ValueError(
@@ -170,7 +175,7 @@ def analyze_result(data: dict, selection: AnalysisInput) -> dict:
                 "趋势按时间值升序，等距显示已返回的时间点；不补齐缺失日期、不推断增长率。"
                 if selection.kind == "trend" else "对比按结果中维度首次出现顺序，不自动排名。",
                 "图形坐标为近似比例；精确数值以标签及表格为准。",
-                "按已返回值精确匹配分组，不模拟 MySQL 排序规则；SQL 已聚合的值也只做求和，"
+                "按已返回值精确匹配分组，不模拟数据库排序规则；SQL 已聚合的值也只做求和，"
                 "不会将平均值的和解释为总体均值。",
             ],
         }

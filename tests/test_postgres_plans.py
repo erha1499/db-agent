@@ -107,7 +107,13 @@ def test_bitmap_tree_checks_every_access_and_parent_relationship(limits, kind):
 @pytest.mark.parametrize("join_type", ["Inner", "Left", "Right"])
 def test_known_physical_joins_and_strict_output_threshold(limits, kind, join_type):
     children = [node(), node(Alias="c", **{"Relation Name": "customers"})]
-    plan = parent(kind, children, rows=1000000, **{"Join Type": join_type, "Inner Unique": False})
+    fields = {"Join Type": join_type, "Inner Unique": False}
+    if kind == "Hash Join":
+        children[1] = parent("Hash", [children[1]])
+        fields["Hash Cond"] = "o.customer_id = c.id"
+    if kind == "Merge Join":
+        fields["Merge Cond"] = "o.customer_id = c.id"
+    plan = parent(kind, children, rows=1000000, **fields)
     assert assess(limits, plan).decision == "ALLOW"
     plan["Plan Rows"] += 1
     result = assess(limits, plan)
@@ -118,7 +124,10 @@ def test_known_physical_joins_and_strict_output_threshold(limits, kind, join_typ
     ("Sort", {"Sort Key": ["secret"]}), ("Hash", {}), ("Materialize", {}),
     ("Aggregate", {"Strategy": "Plain", "Partial Mode": "Simple"}),
     ("Aggregate", {"Strategy": "Sorted", "Partial Mode": "Simple", "Group Key": ["id"]}),
-    ("Aggregate", {"Strategy": "Hashed", "Partial Mode": "Simple", "Planned Partitions": 0}),
+    ("Aggregate", {
+        "Strategy": "Hashed", "Partial Mode": "Simple", "Planned Partitions": 0,
+        "Group Key": ["id"],
+    }),
 ])
 def test_sort_and_temporary_estimates_use_input_not_small_output(limits, kind, fields):
     child = node("Index Scan", rows=100000)
@@ -212,4 +221,27 @@ def test_invalid_child_count_or_relationship_never_becomes_empty_input(limits):
 def test_bitmap_nodes_cannot_appear_outside_a_heap_scan(limits):
     assert assess(limits, node("Bitmap Index Scan")).decision == "UNKNOWN"
     plan = parent("Limit", [node("Bitmap Index Scan")])
+    assert assess(limits, plan).decision == "UNKNOWN"
+
+
+@pytest.mark.parametrize("key", ["Parallel Aware", "Async Capable"])
+def test_missing_nonparallel_evidence_is_unknown(limits, key):
+    plan = node()
+    del plan[key]
+    assert assess(limits, plan).decision == "UNKNOWN"
+
+
+@pytest.mark.parametrize("strategy", ["Sorted", "Hashed", "Mixed"])
+def test_group_strategy_requires_complete_supported_evidence(limits, strategy):
+    plan = parent("Aggregate", [node()], **{"Strategy": strategy, "Partial Mode": "Simple"})
+    assert assess(limits, plan).decision == "UNKNOWN"
+
+
+def test_hash_join_requires_hash_input_and_matching_condition(limits):
+    fields = {"Join Type": "Inner", "Inner Unique": False}
+    plan = parent("Hash Join", [node(), parent("Hash", [node()])], **fields)
+    assert assess(limits, plan).decision == "UNKNOWN"
+    plan["Hash Cond"] = "o.id = o.id"
+    assert assess(limits, plan).decision == "ALLOW"
+    plan["Plans"][1] = node(**{"Parent Relationship": "Inner"})
     assert assess(limits, plan).decision == "UNKNOWN"

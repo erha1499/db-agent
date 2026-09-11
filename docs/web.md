@@ -16,7 +16,7 @@ uv run db-agent web
 
 打开 <http://127.0.0.1:8000>。停止服务按 Ctrl+C；再次启动后历史仍在，未结束的旧任务只标记中断，不会重新执行。可用 `uv run db-agent web --port 8001` 修改本机端口。当前从源码仓库使用，前端产物不打包进 Python wheel。
 
-模型和数据库继续读取根目录现有 `.env`。服务无法启动或页面显示配置未就绪时，按 `.env.example` 完成配置再重启服务；不通过网页输入模型或数据库密码；Web登录密码仅用于本地身份认证。MySQL 与数据初始化沿用 [README](../README.md#本地-mysql)，Web 启动不会自动建表、导入数据或扩大白名单。
+模型和数据库继续读取根目录现有 `.env`。服务无法启动或页面显示配置未就绪时，按 `.env.example` 完成配置再重启服务；不通过网页输入模型或数据库密码；Web登录密码仅用于本地身份认证。MySQL 与数据初始化沿用 [README](../README.md#本地-mysql)，Web 启动不会自动建表、导入数据或扩大白名单。PostgreSQL使用独立可信配置和相同登录/隔离边界，见[PostgreSQL说明](postgresql.md)。
 
 开发时保留 `uv run db-agent web`，另开终端执行：
 

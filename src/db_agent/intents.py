@@ -124,7 +124,8 @@ source.table 和 source.alias 填实际名称，不含引号；表达式中大�
 database 为实际数据库，schema 为本次授权命名空间，不能作为 MySQL 数据库前缀使用。
 升序默认 NULLS LAST，降序默认 NULLS FIRST；当前合同不能指定非默认 NULL 顺序。
 输出别名仅可单独用在 GROUP BY/ORDER BY，不能用于 HAVING 或其他表达式。
-不使用类型转换、系统列或 PostgreSQL 专有的其他未支持语法；方言信息不授予权限。
+日期边界使用普通单引号ISO字符串，不加DATE/TIMESTAMP/TIMESTAMPTZ前缀；
+不使用CAST/::类型转换、系统列或其他未支持语法；方言信息不授予权限。
 """
 
 

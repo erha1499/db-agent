@@ -11,7 +11,7 @@ from db_agent.db import DatabaseError, MetadataConnector
 from db_agent.plans import analyze_plan
 from db_agent.records import RunRecord
 
-POLICY_VERSION = "mysql-select-v1"
+POLICY_VERSION = "mysql-select-v2"
 LIMITATIONS = [
     "仅静态检查与普通 EXPLAIN 估算；未执行业务 SQL。",
     "未验证实际耗时、结果等价或建议效果；成本不是秒数。",

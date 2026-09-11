@@ -80,3 +80,12 @@ uv run python scripts/evaluate_optimization.py --run --include-ecommerce --repea
 电商双方完整结果均为 `[[2, "90.00"]]`，金额独立来自固定审计单的 80−10+20。计划行数是估算，不能当成实测读取行数；客户端时间包含网络、结果解码/编码与游标清理，不含前面的计划采集。未执行 EXPLAIN ANALYZE、清缓存、建索引或管理员写入。小表案例并未观察到耗时改善；电商案例观察到更低耗时，但仅有本地 3 次、受限谓词和该快照结果，不能据此宣称普遍性能提升或生产收益。
 
 最终离线、真实 MySQL、构建与当前 PR HEAD CI 状态由 PR 交付记录维护。新增真实案例已接入 GitHub MySQL job；离线协议替身与真实结果分别报告。该功能目前为直接 CLI 产品入口，不新增 Agent 工具、Web 比较 API 或多身份配置入口。TODO17 整合时必须保留共用 SELECT 派发前和读取后的身份否决检查；不能绕过其收窄的连接器实例。
+
+## PostgreSQL 数据源
+
+可信配置选为PostgreSQL时，直接CLI比较使用该源自己的预检/计划/只读执行内核，
+两侧共享REPEATABLE READ READ ONLY快照，报告标记`same_readonly_postgres_snapshot`。
+保留AB/BA轮换、完整结果和独立列/行比较规则；截断、未知、失败或撤权均不能确认相等。
+MySQL的InnoDB/SQL mode/计划v1不作为PG证据，也不混比两个源的结果。
+PG知识模板确认与比较使用可信postgres方言和实际schema，详见
+[PostgreSQL使用与验收](postgresql.md)。

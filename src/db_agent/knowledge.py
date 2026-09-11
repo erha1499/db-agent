@@ -289,7 +289,10 @@ class KnowledgeStore:
         schemas = {table: await connector.describe_table(table) for table in draft.tables}
         if draft.sql:
             try:
-                _, comparison = select_candidate(draft.sql, draft.sql, list(schemas.values()))
+                _, comparison = select_candidate(
+                    draft.sql, draft.sql, list(schemas.values()),
+                    dialect=getattr(connector, "dialect", "mysql"),
+                )
                 if comparison != "AST_MATCH":
                     raise IntentError()
             except IntentError:

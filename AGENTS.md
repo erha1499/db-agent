@@ -6,8 +6,8 @@
 
 - 先读 `README.md` 和 [TODO.md](TODO.md)，核对 Git 状态和实际文件。TODO 维护大步骤、完成状态和下一步优先级，列入清单不代表功能已经存在或已授权实施。
 - 面向实际数据库工作流程，主要业务是数据库查询、SQL 风险预检与诊断，后续逐步扩展 Data Agent、业务记忆和受控变更。
-- 近期目标：Python、LangChain、单个 OpenAI 兼容模型和明确授权的 MySQL 数据源，分阶段完成可实际使用的 SQL 预检、诊断与受控查询闭环；先在隔离测试环境验证。
-- 当前已接入 MySQL 元数据、SQLGlot 静态预检、普通 EXPLAIN JSON、结构化诊断与受控 SELECT；Agent 提供 `list_tables` / `describe_table` / `analyze_sql` / `execute_query`，并有直接 CLI、`session` 会话内多轮查询、本机 Web 页面、最小运行记录、pytest、Ruff、百万订单电商合成数据和固定业务评测。查询回答由可信报告确定性生成。已支持经确认的本机跨会话业务知识，已提供同快照 SQL 优化核对；通用 SQL 等价证明和变更仍待实现。开发使用 Python 3.13 和 `uv sync`，依赖版本以 `uv.lock` 为准。
+- 近期目标：Python、LangChain、单个 OpenAI 兼容模型和明确授权的 MySQL/PostgreSQL 数据源，分阶段完成可实际使用的 SQL 预检、诊断与受控查询闭环；先在隔离测试环境验证。
+- 当前已接入 MySQL/PostgreSQL 元数据、SQLGlot 静态预检、普通 EXPLAIN JSON、结构化诊断与受控 SELECT；Agent 提供 `list_tables` / `describe_table` / `analyze_sql` / `execute_query`，并有直接 CLI、`session` 会话内多轮查询、本机 Web 页面、最小运行记录、pytest、Ruff、百万订单电商合成数据和固定业务评测。查询回答由可信报告确定性生成。已支持经确认的本机跨会话业务知识，已提供同快照 SQL 优化核对；通用 SQL 等价证明和变更仍待实现。开发使用 Python 3.13 和 `uv sync`，依赖版本以 `uv.lock` 为准。
 - 使用 `langchain.agents.create_agent` 与 `langchain_openai.ChatOpenAI`，复用框架的模型与工具协议，不自写 harness 或自定义 Graph。LangGraph 是框架内部依赖；近期不扩展多 Agent、分布式编排、完整观测平台或通用记忆系统。
 - 每个阶段优先完成一条受控业务闭环和验收证据，再扩大功能范围。按目标环境核对版本、权限、运行限制与业务结果，不能用假工具、预制回答或伪造测试结果冒充可运行功能。
 
@@ -31,6 +31,18 @@
 - 大规模合成数据由 `ecommerce.py` 流式生成，`scripts/seed_ecommerce.py --apply` 默认导入 100 万订单及关联的六张 `ec_*` 表；只使用同一本地 Compose 的管理员 socket，原有三张小表保持不变。导入锁、分批事务与 `ec_seed_manifest` 记录进度，实际行数和金额关系验证后才置 COMPLETE；完整同配置数据可再次验收，部分导入或配置不符时停止，不自动覆盖、补写或重试。`--verify-only` 不改数据，SQL 导出为 UNVERIFIED。清单不加入 Agent 白名单，脚本不作为运行时工具，数据版本或规则变化需同步独立 oracle 与验收。
 - `uv run db-agent db check`、`db tables`、`db describe orders`、`db analyze '<SQL>'`、`db query '<SQL>'` 不需要模型凭据。`db analyze --stdin` 与 `db query --stdin` 接收有长度限制的 UTF-8 输入。`check` 仅检查模型，`chat` 需要模型与数据库配置，并接入元数据、诊断与受控查询工具。
 
+## PostgreSQL 数据源
+
+- `DB_AGENT_DATABASE_KIND` 可信配置选择mysql（默认）或postgresql；`PostgreSQLSettings`用独立`DB_AGENT_POSTGRES_*`，schema配置为`DB_AGENT_POSTGRES_SCHEMA`。运行时通过`connectors.create_connector`构造具体连接器，模型与浏览器不能选择源/身份或提交批准。
+- PostgreSQL18.6与Psycopg3.3.5锁定版本；独立`compose.postgres.yaml`项目db-agent-postgres，127.0.0.1:15432/db_agent_pg.business。`scripts/setup_postgres.py --apply`仅在不存在目标表时建合成fixture；`--verify-only`只读。凭据仅忽略的0600 `.env.postgres`，应用不自动读取它。不得碰原MySQL或删除已有卷；资源/停止说明见`infra/postgres/README.md`。
+- `postgres.py`是独立连接器，实际核对reader/session身份、目标、版本、角色与对象权限；拒绝管理权限/角色成员/CREATE/TEMP/写表权限。保留17的`authorization_check`、`knowledge_scope`与`_authorize`，派发与读取两侧均可否决，知识before_select只可追加拒绝。
+- 仅普通永久heap基础表、内建标量列与简单内建btree索引；RLS、视图/外部表、继承/分区、生成列、自定义类型、表达式/部分/未就绪索引与表达式扩展统计拒绝。固定并复核constraint_exclusion=off；不把只读事务当成所有规划期代码均安全的证明。管理员与系统目录完整性是可信环境条件。
+- 执行入口重新检查SQL→对象→ACCESS SHARE表锁→OID属性复查→普通EXPLAIN DECLARE NO SCROLL CURSOR→计划→对象/身份/只否决hook→实际服务器游标。每次查询在READ COMMITTED READ ONLY事务内，比较双方在同一REPEATABLE READ READ ONLY快照。固定UTC/ISO日期/search_path/禁并行与JIT，服务端statement_timeout、lock_timeout与原分析/执行/操作预算共同生效；不重试、不排空、不宣称取消已确认。
+- `postgres_plans.py`与MySQL计划解析分开；必须具备已知计划形状与可信关系行数估计，不能把过滤后Plan Rows当Seq Scan扫描量，LIMIT不豁免大扫描。统计可能陈旧；未知/缺失证据停止。`postgres_results.py`按OID核对类型与Python值，金额与大整数保精度，timestamp无时区/timestamptz按UTC；text可有界返回，但不承诺单字段内存硬限。JSON/array/bytea/domain/enum等拒绝。
+- 两方言均增加searched CASE，simple CASE/IF/CTE/子查询/UNION/window/DISTINCT仍不支持。PG标识符63字节、未引号折小写、双引号精确；系统列与未支持的cast等拒绝。合同/语义三阶段使用同一可信方言/当前schema，无额外模型或工具预算。
+- source_scope包含kind/schema/源/账号/完整表范围；Web配置代际也绑定kind。旧MySQL范围不能借PG同名表取回历史、知识、结果或执行授权。跨源比较、PG写入均未实现；后续MySQL变更功能不得自动授予PG写权限。
+- PostgreSQL真实入口：`DB_AGENT_POSTGRES_INTEGRATION=1 uv run pytest tests/test_postgres_integration.py tests/test_postgres_services.py -q`；仅独立随机探针DDL：`DB_AGENT_POSTGRES_DDL_INTEGRATION=1 uv run pytest tests/test_postgres_isolation.py -q`。真实模型固定公开业务验收为`uv run python scripts/evaluate_postgres.py --run`；替身、首次失败与真实结果分开记录。使用说明与证据见`docs/postgresql.md`、`evals/POSTGRES.md`。CI新建独立合成目标，不依赖本机服务或模型。
+
 ## 架构边界
 
 - LangChain 负责模型与工具调度、调用 ID 关联和结果回填；本项目负责领域工具 schema、服务端参数校验、停止条件和预算。不要将业务规则写进框架状态或提示词。
@@ -51,7 +63,7 @@
 - 表权限来自服务端 `DB_AGENT_MYSQL_ALLOWED_TABLES` JSON 数组，默认空；每次读取都检查白名单。它现在授权元数据与业务数据读取，没有列级或行级权限。模型不能自行指定可信身份、修改授权或把字段名推测的关联说成已验证外键；本地配置白名单是权限上限；Web另用可信身份配置收窄表范围，CLI不因此变成多用户接口。
 - 静态预检在 `policy.py`，计划规则在 `plans.py`，报告在 `analysis.py`；保持框架无关。`MetadataConnector.explain_checked` 每次内部重新预检，校验目标库、MySQL 8.4、兼容 SQL mode、基础表和 JSON v1 后发送原始 SQL 的普通 EXPLAIN。不得以工具调用顺序或已有报告绕过该入口。
 - 分析配置独立使用 `DB_AGENT_ANALYSIS_*`：默认 SQL 16384 字节、AST 512 节点/32 层、8 个表引用、计划 65536 字节/256 个 JSON 值节点、10 秒时限；报告额外允许 8 KiB 元数据。扫描/连接产出/排序审核阈值为 100000/1000000/100000 估算行，严格超过时 REVIEW，不能解释为秒数或生产保证。
-- 当前支持单表、显式 INNER/LEFT JOIN ON、基础表达式与五种聚合。CTE/子查询/UNION/window 等 UNKNOWN；实际注释、侧效操作、越界对象与非批准函数明确拒绝。`db analyze` 只返回报告，生成报告成功为退出码 0，自动化必须读取 decision；这不是查询命令的退出码约定。
+- 当前支持单表、显式 INNER/LEFT JOIN ON、基础表达式、searched CASE WHEN 与五种聚合。CTE/子查询/UNION/window 等 UNKNOWN；实际注释、侧效操作、越界对象与非批准函数明确拒绝。`db analyze` 只返回报告，生成报告成功为退出码 0，自动化必须读取 decision；这不是查询命令的退出码约定。
 - `query.py` 负责查询业务响应与记录，`results.py` 负责类型转换和有界结果；`MetadataConnector.execute_checked` 内部重新预检，不接收旧报告或 approved 参数。它在同一连接的 READ COMMITTED 显式 READ ONLY 事务中采集普通 EXPLAIN，计划前后两次核对所有对象为 BASE TABLE/InnoDB，并在事务开始后、派发 SELECT 前两次确认协议事务状态；仅 ALLOW 可发送原始 SQL。
 - `optimization.py` 的 `OptimizationService` 由直接 CLI `db compare` 提供原/候选 SQL 核对，不调用模型、不新增 Web API 或 Agent 工具。`compare_checked` 与 `execute_checked` 共用私有执行内核；单查询仍 READ COMMITTED，比较固定两侧在 REPEATABLE READ + WITH CONSISTENT SNAPSHOT 的显式 READ ONLY 事务，读回隔离级别且每侧完整重检/否决。每对共享原总预算，不接受旧 approved、报告或外部连接。第一侧不完整立即停止，不排空或重连补跑。
 - 比较按列位置/标签/类型、精确数值、NULL 和重复行次数核对；任一有 ORDER BY 则核对序列，添加/删除排序合同不确认相等。`observed_equal` 仅本快照完整结果一致，`different` 为实测差异，缺证据/截断/失败/跨次变化为 `inconclusive`；不宣称通用等价。显式 repeat 1–3，AB/BA交替，每对独立快照，报告实际计划估算及客户端 SELECT 派发至读取耗时，非服务器纯执行时间。独立固定预期和真实 reader 验收见 [优化验证](docs/optimization.md)，预算默认值在验收脚本中显式固定，不得被 shell 放宽。运行记录不写 SQL/行值；返回比较报告含输入和结果，保存副本按数据权限处理。

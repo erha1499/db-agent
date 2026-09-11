@@ -109,6 +109,7 @@ class PostgreSQLConnector:
                    current_setting('transaction_isolation') AS isolation,
                    current_setting('standard_conforming_strings') AS standard_strings,
                    current_setting('TimeZone') AS timezone,
+                   current_setting('constraint_exclusion') AS constraint_exclusion,
                    current_setting('search_path') AS search_path,
                    r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication
                      OR r.rolbypassrls AS privileged,
@@ -142,6 +143,7 @@ class PostgreSQLConnector:
         if (connection.info.transaction_status != TransactionStatus.INTRANS
                 or row["read_only"] != "on" or row["isolation"] != isolation
                 or row["standard_strings"] != "on" or row["timezone"] != "UTC"
+                or row["constraint_exclusion"] != "off"
                 or row["search_path"] != 'pg_catalog, "' + self._settings.schema_name + '"'):
             raise DatabaseError("TRANSACTION_STATE", "未确认 PostgreSQL 显式只读事务和固定会话设置")
         return "18.6"
@@ -177,8 +179,10 @@ class PostgreSQLConnector:
                                       " %s, false)", (str(max(1, math.ceil(budget * 1000))),))
                     for statement in (
                         "SET TIME ZONE 'UTC'", "SET standard_conforming_strings = on",
+                        "SET DateStyle = 'ISO, YMD'",
                         "SET max_parallel_workers_per_gather = 0", "SET jit = off",
                         "SET row_security = off", "SET cursor_tuple_fraction = 1.0",
+                        "SET constraint_exclusion = off",
                     ):
                         await self._fetch(connection, statement)
                     await self._fetch(connection, "SELECT pg_catalog.set_config('search_path',"
@@ -221,7 +225,9 @@ class PostgreSQLConnector:
                        c.reltuples AS estimated_rows, a.amname,
                        pg_catalog.has_table_privilege(c.oid, 'SELECT') AS can_select,
                        pg_catalog.has_table_privilege(c.oid,
-                         'INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER,MAINTAIN') AS can_write,
+                         'INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER,MAINTAIN,REFERENCES')
+                         OR pg_catalog.has_any_column_privilege(c.oid, 'INSERT,UPDATE,REFERENCES')
+                         AS can_write,
                        c.relowner = (SELECT oid FROM pg_catalog.pg_roles
                                     WHERE rolname=current_user) AS owner,
                        EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i
@@ -238,7 +244,9 @@ class PostgreSQLConnector:
                            OR EXISTS (SELECT 1 FROM pg_catalog.pg_opclass op
                              JOIN pg_catalog.pg_namespace ns ON ns.oid=op.opcnamespace
                              WHERE op.oid=ANY(i.indclass) AND ns.nspname<>'pg_catalog')))
-                         AS unsafe_indexes
+                         AS unsafe_indexes,
+                       EXISTS (SELECT 1 FROM pg_catalog.pg_statistic_ext x
+                         WHERE x.stxrelid=c.oid AND x.stxexprs IS NOT NULL) AS unsafe_statistics
                 FROM pg_catalog.pg_class c
                 JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
                 LEFT JOIN pg_catalog.pg_am a ON a.oid=c.relam
@@ -252,7 +260,8 @@ class PostgreSQLConnector:
                 raise DatabaseError("PERMISSION_DENIED", "目标表必须仅授予当前账号只读权限")
             if (row["relkind"] != "r" or row["relpersistence"] != "p" or row["amname"] != "heap"
                     or any(row[k] for k in ("relrowsecurity", "relforcerowsecurity", "relhasrules",
-                                           "inherited", "unsafe_columns", "unsafe_indexes"))):
+                                           "inherited", "unsafe_columns", "unsafe_indexes",
+                                           "unsafe_statistics"))):
                 raise DatabaseError("UNSUPPORTED_TABLE", "只支持无RLS/继承/生成列的普通heap基础表、"
                                     "内建标量类型和简单内建btree索引")
             evidence[table] = row
@@ -378,7 +387,10 @@ class PostgreSQLConnector:
         objects = await self._objects(connection, checked.tables, lock=True)
         self._authorize()
         cursor = connection.cursor(row_factory=tuple_row)
-        await cursor.execute("EXPLAIN (FORMAT JSON, VERBOSE TRUE, ANALYZE FALSE) " + sql, None)
+        await cursor.execute(
+            "EXPLAIN (FORMAT JSON, VERBOSE TRUE, ANALYZE FALSE) "
+            "DECLARE db_agent_result NO SCROLL CURSOR WITHOUT HOLD FOR " + sql, None,
+        )
         row = await cursor.fetchone()
         if row is None or len(row) != 1 or await cursor.fetchone() is not None:
             raise DatabaseError("INVALID_PLAN", "未返回唯一 PostgreSQL JSON 计划")
@@ -427,10 +439,18 @@ class PostgreSQLConnector:
             remaining = query_limits.operation_timeout_seconds - (time.monotonic() - started)
             if remaining <= 0:
                 raise DatabaseError("TIMEOUT", "查询总预算耗尽，业务SQL未派发")
-            async with self._connection(remaining, paired=paired) as connection:
-                for sql, outcome in zip(statements, outcomes, strict=True):
+            initial_deadline = (asyncio.get_running_loop().time()
+                                + analysis_limits.timeout_seconds)
+            async with (
+                asyncio.timeout_at(initial_deadline) as setup_timeout,
+                self._connection(remaining, paired=paired) as connection,
+            ):
+                setup_timeout.reschedule(None)
+                for index, (sql, outcome) in enumerate(zip(statements, outcomes, strict=True)):
                     phase = "analysis"
-                    deadline = asyncio.get_running_loop().time() + analysis_limits.timeout_seconds
+                    deadline = initial_deadline if index == 0 else (
+                        asyncio.get_running_loop().time() + analysis_limits.timeout_seconds
+                    )
                     async with asyncio.timeout_at(deadline):
                         checked = self.check_sql(sql, analysis_limits)
                         outcome.update(check=checked, decision=checked.decision)

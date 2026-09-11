@@ -179,3 +179,18 @@ def test_visible_control_text_does_not_change_raw_snapshot():
     output = analyze(result)
     assert output['points'][0]['label'] == '"label\\u202espoof\\u202c"'
     assert result['rows'][0][0] == raw
+
+
+def test_postgres_timestamptz_trend_keeps_exact_utc_groups():
+    value = analyze(data([
+        ["2026-02-01T00:01:00+00:00", "100.00"],
+        ["2026-02-01T00:01:00+00:00", "30.00"],
+    ], types=("timestamptz", "decimal")), "trend")
+    assert value["points"][0]["dimension"] == "2026-02-01T00:01:00+00:00"
+    assert value["points"][0]["sum"] == "130.00"
+
+
+@pytest.mark.parametrize("value", ["2026-02-01T00:01:00", "2026-02-01T00:01:00+08:00"])
+def test_postgres_trend_requires_verified_utc_timestamp(value):
+    with pytest.raises(ValueError, match="趋势时间"):
+        analyze(data([[value, "1.00"]], types=("timestamptz", "decimal")), "trend")

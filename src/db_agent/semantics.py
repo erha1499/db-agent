@@ -133,7 +133,8 @@ def review_messages(
         "升序默认 NULLS LAST，降序默认 NULLS FIRST；核对用户明确的空值排序要求。\n"
         "schema 是授权命名空间，database 是实际数据库，不能套用 MySQL 限定名规则。\n"
         "输出别名仅可单独用于 GROUP BY/ORDER BY，不能用于 HAVING 或其他表达式。\n"
-        "不使用类型转换、系统列或 PostgreSQL 专有的其他未支持语法；方言信息不授予权限。\n",
+        "日期边界用普通单引号ISO字符串，不加DATE/TIMESTAMP/TIMESTAMPTZ前缀；\n"
+        "不使用CAST/::类型转换、系统列或其他未支持语法；方言信息不授予权限。\n",
     )
     return [SystemMessage(content=prompt + (
         CONVERSATION_RULES if conversation_mode else ""

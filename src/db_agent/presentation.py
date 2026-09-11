@@ -130,10 +130,10 @@ def _render_result(report: dict) -> list[str]:
 
     if report.get("session_time_zone") == "+00:00":
         lines.append(
-            "时间说明：DATETIME 不自带时区；本次会话时区为 +00:00，TIMESTAMP 按 UTC 返回。"
+            "时间说明：无时区日期时间不附加时区；本次会话为 +00:00，带时区类型按 UTC 返回。"
         )
     else:
-        lines.append("时间说明：DATETIME 不自带时区；当前报告未确认会话时区。")
+        lines.append("时间说明：无时区日期时间不附加时区；当前报告未确认会话时区。")
     return lines
 
 

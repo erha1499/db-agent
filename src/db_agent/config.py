@@ -149,7 +149,7 @@ class DatabaseSettings(_ProjectSettings):
 class PostgreSQLSettings(DatabaseSettings):
     """Separate PostgreSQL reader configuration, never inferred from MySQL credentials."""
 
-    model_config = SettingsConfigDict(env_prefix="DB_AGENT_POSTGRES_")
+    model_config = SettingsConfigDict(env_prefix="DB_AGENT_POSTGRES_", validate_by_name=True)
     kind: ClassVar[str] = "postgresql"
     port: int = Field(default=15432, ge=1, le=65535)
     database: str = "db_agent_pg"

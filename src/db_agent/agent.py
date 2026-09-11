@@ -574,6 +574,11 @@ async def run_agent_observed(
                         SYSTEM_PROMPT + "\n可信目标 SQL 方言："
                         + getattr(connector, "dialect", "mysql")
                         + "；必须使用目标方言，不能切换数据源。"
+                        + ("\nPostgreSQL：标识符用双引号或简单小写名称；日期边界用普通"
+                           "单引号ISO字符串，不加DATE/TIMESTAMP/TIMESTAMPTZ类型前缀，"
+                           "不使用CAST或::类型转换。比较会由实际日期列确定类型；"
+                           "带时区边界明确UTC或偏移，无时区列不凭空加时区。"
+                           if getattr(connector, "dialect", "mysql") == "postgres" else "")
                         + (KNOWLEDGE_RULES if knowledge else "")
                         + (CONVERSATION_RULES if conversation_mode else "")
                         + "\n授权表名候选（仅配置，存在性、类型和结构未验证）：\n"

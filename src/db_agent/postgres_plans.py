@@ -177,8 +177,8 @@ class _Reader:
             self.unsupported(path, "位图访问必须属于已验证的位图堆扫描结构")
         if node.get("Parent Relationship") != relationship:
             self.unsupported(path, "计划父子关系不完整或包含未支持子计划")
-        for key in {"Parallel Aware", "Async Capable"} & node.keys():
-            if node[key] is not False:
+        for key in ("Parallel Aware", "Async Capable"):
+            if node.get(key) is not False:
                 self.unsupported(path, "不支持并行或异步计划节点")
         for key in {"Disabled", "Inner Unique"} & node.keys():
             if type(node[key]) is not bool:
@@ -237,12 +237,24 @@ class _Reader:
             # PostgreSQL may swap the physical sides of a SQL LEFT JOIN.
             if node.get("Join Type") not in {"Inner", "Left", "Right"}:
                 self.unsupported(path, "计划连接方式尚未支持")
+            if type(node.get("Inner Unique")) is not bool:
+                self.unsupported(path, "连接节点缺少唯一性证据")
+            condition = {"Hash Join": "Hash Cond", "Merge Join": "Merge Cond"}.get(kind)
+            if condition and not node.get(condition):
+                self.unsupported(path, "连接节点缺少匹配条件证据")
+            if kind == "Hash Join" and (
+                len(children) != 2 or not isinstance(children[1], dict)
+                or children[1].get("Node Type") != "Hash"
+            ):
+                self.unsupported(path, "Hash Join 缺少内部哈希构建节点")
             self.large(rows, self.limits.review_join_rows, "PLAN_LARGE_JOIN", path)
         if kind == "Aggregate":
             if node.get("Strategy") not in {"Plain", "Sorted", "Hashed"}:
                 self.unsupported(path, "聚合策略尚未支持")
             if node.get("Partial Mode") != "Simple":
                 self.unsupported(path, "分段或并行聚合尚未支持")
+            if node.get("Strategy") in {"Sorted", "Hashed"} and not node.get("Group Key"):
+                self.unsupported(path, "分组聚合缺少分组键证据")
             if "Planned Partitions" in node:
                 self.estimate(node, "Planned Partitions", path)
         if kind == "Sort" and not node.get("Sort Key"):
