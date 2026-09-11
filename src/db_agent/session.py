@@ -4,7 +4,7 @@ from db_agent.agent import run_agent_observed
 from db_agent.config import AnalysisSettings, DatabaseSettings, QuerySettings, Settings
 from db_agent.conversation_context import conversation_prompt
 from db_agent.db import MetadataConnector
-from db_agent.presentation import AgentRunResult, QueryExecution
+from db_agent.presentation import AgentRunResult, has_complete_query_results
 from db_agent.records import RunRecord
 
 
@@ -80,7 +80,7 @@ class ConversationSession:
             )
             if not isinstance(result, AgentRunResult):
                 raise RuntimeError("Agent 返回格式无效。")
-            if self._complete(result):
+            if has_complete_query_results(result):
                 self._requests.append(prompt)
             else:
                 self._needs_reset = True
@@ -90,35 +90,3 @@ class ConversationSession:
             raise
         finally:
             self._busy = False
-
-    @staticmethod
-    def _complete(result: AgentRunResult) -> bool:
-        attempts = result.tool_calls.count("execute_query")
-        if not attempts or attempts != len(result.queries):
-            return False
-        for query in result.queries:
-            if not isinstance(query, QueryExecution) or not isinstance(query.report, dict):
-                return False
-            report = query.report
-            if (
-                report.get("status") != "ok" or report.get("decision") != "ALLOW"
-                or report.get("execution_status") != "completed"
-                or report.get("error") is not None
-                or not isinstance(report.get("result"), dict)
-                or report["result"].get("truncated") is not False
-            ):
-                return False
-            data = report["result"]
-            columns, rows = data.get("columns"), data.get("rows")
-            if (
-                not isinstance(columns, list) or not columns
-                or any(not isinstance(column, dict)
-                       or not isinstance(column.get("name"), str)
-                       or not isinstance(column.get("type"), str) for column in columns)
-                or not isinstance(rows, list)
-                or type(data.get("row_count")) is not int
-                or data["row_count"] != len(rows)
-                or any(not isinstance(row, list) or len(row) != len(columns) for row in rows)
-            ):
-                return False
-        return True
