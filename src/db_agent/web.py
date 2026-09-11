@@ -2,6 +2,8 @@
 
 import asyncio
 import fcntl
+import json
+import re
 import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -11,7 +13,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,6 +31,14 @@ from db_agent.conversations import ConversationStore, now, source_scope
 from db_agent.db import DatabaseError, MetadataConnector
 from db_agent.presentation import has_complete_query_results
 from db_agent.records import RunRecord
+from db_agent.result_delivery import (
+    SCOPE_NOTE,
+    AnalysisInput,
+    ExportInput,
+    analyze_result,
+    html_report,
+    validate_result,
+)
 
 
 class RunInput(BaseModel):
@@ -122,6 +132,39 @@ class WebRuntime:
         if value is None:
             raise HTTPException(404, "运行记录不存在。")
         return value
+
+    def result_snapshot(self, conversation_id, run_id, result_id, selection=None):
+        # Only persisted evidence under the server's source scope is deliverable.
+        # IDs select data; none grants access or authorizes a database operation.
+        if not all(re.fullmatch(r"[a-f0-9]{32}", value)
+                   for value in (conversation_id, run_id, result_id)):
+            raise HTTPException(404, "结果不存在或不属于当前会话。")
+        run = self.store.get_run(run_id, self.scope)
+        if run is None or run["conversation_id"] != conversation_id:
+            raise HTTPException(404, "结果不存在或不属于当前会话。")
+        if run["status"] != "completed" or conversation_id in self.unsaved_conversations:
+            raise HTTPException(409, "运行未完成或历史未保存，无法交付结果。")
+        matches = [q for q in run["queries"] if q["report"].get("result_id") == result_id]
+        if len(matches) != 1:
+            raise HTTPException(404, "结果不存在或标识不唯一。")
+        query = matches[0]
+        data = validate_result(query["report"])
+        notes = [
+            SCOPE_NOTE,
+            "结果已截断，只分析已返回部分，不能推断原查询总量；服务器语句状态未确认。"
+            if data["truncated"] else "当前 SQL 的结果已完整返回，不表示整个数据库的完整数据。",
+            "此文件是保存时的结果快照，取回与分析不会重新查询数据库，也不会调用模型。",
+            "DATETIME 无时区；查询会话为 +00:00 时 TIMESTAMP 按 UTC 返回。",
+        ]
+        if run.get("missing_query_reports"):
+            notes.append("本轮还有查询调用缺少报告；本文件只包含此结果，不能代表整轮任务完成。")
+        return {
+            "version": "db-agent-result-v1", "conversation_id": conversation_id,
+            "run_id": run_id, "result_id": result_id, "finished_at": run["finished_at"],
+            "prompt": run["prompt"], "sql": query["sql"], "report": query["report"],
+            "notes": notes,
+            "analysis": analyze_result(data, selection) if selection else None,
+        }
 
     def task_done(self, run: dict, task: asyncio.Task):
         # A task cancelled before its coroutine starts never enters execute's finally.
@@ -429,6 +472,43 @@ def create_app(*, store_path: Path | None = None, static_dir: Path | None = None
     @app.get("/api/runs/{run_id}")
     async def run(run_id: str, request: Request):
         return runtime(request).run(run_id)
+
+    result_path = "/api/conversations/{conversation_id}/runs/{run_id}/results/{result_id}"
+
+    @app.get(result_path)
+    async def saved_result(conversation_id: str, run_id: str, result_id: str, request: Request):
+        if request.query_params:
+            raise HTTPException(422, "结果取回不接受额外参数。")
+        return runtime(request).result_snapshot(conversation_id, run_id, result_id)
+
+    @app.post(result_path + "/analysis")
+    async def result_analysis(
+        conversation_id: str, run_id: str, result_id: str,
+        payload: AnalysisInput, request: Request,
+    ):
+        if request.query_params:
+            raise HTTPException(422, "分析不接受额外参数。")
+        return runtime(request).result_snapshot(conversation_id, run_id, result_id, payload)
+
+    @app.post(result_path + "/export")
+    async def export_result(
+        conversation_id: str, run_id: str, result_id: str,
+        payload: ExportInput, request: Request,
+    ):
+        if request.query_params:
+            raise HTTPException(422, "导出不接受额外参数。")
+        snapshot = runtime(request).result_snapshot(
+            conversation_id, run_id, result_id, payload.analysis,
+        )
+        content = (
+            json.dumps(snapshot, ensure_ascii=False, allow_nan=False, indent=2)
+            if payload.format == "json" else html_report(snapshot)
+        )
+        return Response(
+            content, media_type="application/json" if payload.format == "json" else "text/html",
+            headers={"Content-Disposition":
+                     f'attachment; filename="db-agent-result-{result_id}.{payload.format}"'},
+        )
 
     @app.post("/api/runs/{run_id}/cancel")
     async def cancel(run_id: str, request: Request):

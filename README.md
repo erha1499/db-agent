@@ -54,7 +54,7 @@ GitHub Actions 的覆盖范围、锁定依赖的构建安装、目标环境验�
 
 ## 本地 Web 页面
 
-[Web 使用说明](docs/web.md)提供常见 AI 对话界面，包括会话历史、智能查询、SQL 诊断、结果表格、表结构、运行进度和停止。保留 CLI `session` 的完整请求包与严格查询结果校验；Web 历史持久化到本机，仅成功查询的用户原始请求用于后续口径。
+[Web 使用说明](docs/web.md)提供常见 AI 对话界面，包括会话历史、智能查询、SQL 诊断、结果表格、表结构、运行进度和停止。查询完成后可在[分析与交付](docs/result-delivery.md)中选择维度和数值列，生成分组对比、时间趋势，下载带原始 SQL 与范围说明的 HTML 报告或 JSON 快照；分析只处理已保存结果，不再调用模型或数据库。保留 CLI `session` 的完整请求包与严格查询结果校验；Web 历史持久化到本机，仅成功查询的用户原始请求用于后续口径。
 
 ```bash
 npm --prefix frontend ci --registry=https://registry.npmjs.org
@@ -193,7 +193,7 @@ uv run db-agent chat '分别按 created_at 和 paid_at 查询 2026 年 2 月 pai
 | `rejected` | 静态或计划规则拒绝，业务 SQL 未派发 | `3` |
 | `error` | 取证或执行发生错误；派发后失败的执行状态为 `unknown` | `1` |
 
-配置或 CLI 输入错误退出码为 `2`。`ALLOW` 不代表执行成功，`result` 才包含实际返回数据。`result_id` 仅关联本次结果，没有结果持久化或按 ID 取回接口；工具协议正常结束也不等于业务成功。
+配置或 CLI 输入错误退出码为 `2`。`ALLOW` 不代表执行成功，`result` 才包含实际返回数据。CLI 的 `result_id` 仅关联本次结果；Web 提供绑定当前会话与数据源的已保存结果取回和下载，不能取回任意 CLI 结果；工具协议正常结束也不等于业务成功。
 
 行数或字节超限会返回截断结果，`row_count` 仅为返回行数，不能当作原查询总行数。`truncated=false` 的完整性仅针对当前 SQL 的结果，仍受其 `WHERE` / `LIMIT` 限制。`result_bytes` 统计完整结果对象的 JSON 大小，不是扫描量、网络流量或单字段内存上限；查询响应的 `duration_ms` 包含预检、计划采集和读取，不是纯 SQL 执行耗时。业务查询用 `SSCursor` 逐行读取，截断时直接关闭连接，不调用会排空剩余结果的游标关闭；超时和取消也清理连接，但不能据此宣称服务器已确认取消 SQL。截断时 `server_statement_status` 保持 `unknown`。
 
@@ -306,6 +306,7 @@ flowchart TD
 | `compose.yaml` / `infra/mysql/init` | 已建立 | 本地 MySQL、持久化数据卷及只读账号初始化 |
 | `scripts/seed_local_mysql.py` | 已建立 | 管理员显式创建固定合成业务表与数据 |
 | `src/db_agent/ecommerce.py` / `scripts/seed_ecommerce.py` | 已建立 | 确定性电商数据、固定本地目标的分批 SQL 导入、清单与真实验收 |
+| `src/db_agent/result_delivery.py` / `frontend/src/ResultDelivery.tsx` | 已建立 | 本机已保存结果的精确分组与时间趋势、范围说明、HTML/JSON 报告交付 |
 | `src/db_agent/presentation.py` | 已建立 | 根据可信查询报告展示 SQL、结果、空集、NULL、截断和失败 |
 | `src/db_agent/intents.py` | 已建立 | 无候选输入的完整需求合同、代码编译与保守 AST 选择；不授予执行权限 |
 | `src/db_agent/semantics.py` | 已建立 | 选定 SQL 的六维最终复核消息、协议及严格结果校验；不循环修正 |
