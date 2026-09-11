@@ -24,9 +24,18 @@ db-agent = "db_agent.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8,<10", "ruff>=0.12,<1"]
+build = ["hatchling>=1.27,<2"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/db_agent"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src", "/tests", "/scripts", "/evals", "/docs", "/infra", "/.github",
+    "/README.md", "/TODO.md", "/AGENTS.md", "/LICENSE", "/compose.yaml",
+    "/pyproject.toml", "/uv.lock", "/.python-version", "/.env.example", "/.gitignore",
+]
+exclude = ["__pycache__", "*.pyc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
