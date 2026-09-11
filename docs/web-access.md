@@ -1,10 +1,12 @@
-# 本机多身份接入与验收
+# 本机工作区与可选多身份模式
 
-Web 现在必须登录。可信身份来自本机管理员维护的私有文件，浏览器提交用户名和密码后取得短期服务端会话；请求不能自报可信 user_id、数据库目标、表白名单或批准信息。
+默认启动无需登录：完成 README 的数据库配置后运行 `uv run db-agent web`，打开 <http://127.0.0.1:8000> 即可查询。无需创建 Web 用户或密码，页面依赖与构建由启动命令准备。表范围直接来自可信数据库白名单；配置好模型后可智能查询，没有模型也可直接查询 SQL、诊断和查看表结构。
 
-目标环境固定为本机隔离合成环境：一个 Python 进程、一个现有 MySQL 数据源、多个 Web 身份。CLI 仍属于运行它的本机操作系统用户，不是面向这些 Web 身份开放的接口。此交付不包含公网部署、生产接入、企业 SSO、操作系统用户隔离或多进程服务。
+免登录模式使用独立的服务端本机工作区和随机浏览器会话，仍检查 Cookie、页面绑定头、Host、Origin 与 SQL 执行规则；不读取 `outputs/web/identities.json`，不继承旧用户历史，也不拥有库存写入/审批权限。历史、结果和知识继续绑定数据源及授权代际。配置变化后重启并刷新页面，旧范围不会自动恢复。
 
-## 管理员准备
+只有显式指定 `--identity-file PATH` 才启用下文的密码登录与多身份模式。该可选模式保留原有隔离和受控变更用法；指定的文件缺失或无效时拒绝接入，不自动回退为免登录。两个模式均只面向本机隔离合成环境和单 Python 进程；CLI 属于运行它的本机操作系统用户，不是远程多用户接口。此交付不包含公网部署、生产接入、企业 SSO、操作系统用户隔离或多进程服务。
+
+## 可选多身份模式：管理员准备
 
 先完成 README 中的本机 MySQL 配置与公开合成 fixture。`.env` 中 `DB_AGENT_MYSQL_ALLOWED_TABLES` 是所有身份表权限的上限；业务连接始终使用现有只读 `db_agent_reader`。添加 Web 用户不会新建 MySQL 账号，也不授予该账号更多权限。
 
@@ -15,14 +17,12 @@ uv run python scripts/manage_web_users.py set alice --display-name Alice \
   --tables orders customers --allow-model --model-tables orders
 uv run python scripts/manage_web_users.py set bob --display-name Bob --tables customers
 uv run python scripts/manage_web_users.py list
-npm --prefix frontend ci --registry=https://registry.npmjs.org
-npm --prefix frontend run build
 uv run db-agent web --identity-file outputs/web/identities.json
 ```
 
 `set` 交互输入两次新密码，要求 12–128 字符，不回显，不把密码放入命令参数；重新 `set` 某用户会完整替换该用户的表范围、模型设置和密码。只有显式 `--allow-model` 才启用模型，`--model-tables` 必须是该用户 `--tables` 的子集。未启用模型的用户仍可直接查询 SQL、诊断 SQL、查看结构和管理自己的知识。`list` 不打印密码摘要。
 
-默认身份文件是忽略的 `outputs/web/identities.json`，仅接受当前操作系统用户拥有的普通文件，权限必须为 `600`；拒绝符号链接、无效字段、重复用户名和超出数据库上限的表。脚本原子替换私有文件，文件缺失或无效时拒绝接入，不自动回退为匿名单用户模式。使用 `--file` 可管理一个明确指定的其他私有文件；启动时用相同的 `--identity-file`。
+管理脚本默认写入忽略的 `outputs/web/identities.json`，服务只有显式 `--identity-file` 才读取它。仅接受当前操作系统用户拥有的普通文件，权限必须为 `600`；拒绝符号链接、无效字段、重复用户名和超出数据库上限的表。脚本原子替换私有文件，文件缺失或无效时拒绝接入，不自动回退为免登录模式。使用 `--file` 可管理一个明确指定的其他私有文件；启动时用相同的 `--identity-file`。
 
 ```bash
 uv run python scripts/manage_web_users.py disable bob
@@ -30,7 +30,7 @@ uv run python scripts/manage_web_users.py disable bob
 
 当前没有 Web 管理员角色或自助注册。能够读写 `.env`、身份文件、SQLite 或进程内存的操作系统用户就是本机管理员，文件系统不用于隔离同一操作系统账号下的恶意程序。不要把管理脚本、配置目录或未鉴权 CLI 包装成远程接口。
 
-## 用户入口与权限
+## 多身份模式的用户入口与权限
 
 浏览器打开 `http://127.0.0.1:8000`。登录页和当前身份面板说明允许表、模型表范围和数据使用边界。三个模式分别是：
 
@@ -44,7 +44,7 @@ uv run python scripts/manage_web_users.py disable bob
 
 智能查询会发送用户原文、成功查询的历史原始请求、显式引用的已确认知识、模型授权范围内取得的结构、SQL 与计划摘要。只把允许该模型使用的内容输入智能查询。服务端不会加载其他用户的请求、结果、知识、数据库凭据或模型密钥作为上下文，查询返回行仍由程序直接显示，查询工具轮后不再请求模型。用户自行键入的文字无法被系统自动证明不含敏感信息；模型表权限限制服务端取证范围，不是文本脱敏器。
 
-## 会话、撤销与隔离
+## 多身份模式的会话、撤销与隔离
 
 登录使用带随机盐的 [scrypt](https://docs.python.org/3/library/hashlib.html#hashlib.scrypt) 摘要核对密码，服务端保存随机会话的摘要，登录有效期一小时且不滑动延期；重启后必须重新登录。Cookie 使用 HttpOnly、SameSite=Strict、`/api` 路径，当前本机 HTTP 不设置 Secure。登录、退出均保留 Host、Origin、跨站请求及专用请求头检查。最多 10 次登录尝试/分钟（单进程共享）、128 个未过期登录，不提供“用户名是否存在”的不同错误。
 

@@ -7,16 +7,17 @@ Web 将现有数据库工具呈现为常见对话界面：左侧管理会话，�
 从仓库根目录运行（需 Python/uv、Node.js；本次验证 Node 26.7.0）：
 
 ```bash
-uv sync
-uv run python scripts/manage_web_users.py set alice --tables orders --allow-model --model-tables orders
-npm --prefix frontend ci --registry=https://registry.npmjs.org
-npm --prefix frontend run build
+uv sync --locked
 uv run db-agent web
 ```
 
-打开 <http://127.0.0.1:8000>。停止服务按 Ctrl+C；再次启动后历史仍在，未结束的旧任务只标记中断，不会重新执行。可用 `uv run db-agent web --port 8001` 修改本机端口。当前从源码仓库使用，前端产物不打包进 Python wheel。
+打开 <http://127.0.0.1:8000>，无需设置用户名或密码。首次启动会自动执行 `npm ci` 与 `npm run build`；已有依赖可复用，只有依赖清单变化时重新安装，源码变化时重新构建，未变化则直接启动。安装或构建失败时按终端提示修复。当前从完整源码仓库使用，前端产物不打包进 Python wheel。
 
-模型和数据库继续读取根目录现有 `.env`。服务无法启动或页面显示配置未就绪时，按 `.env.example` 完成配置再重启服务；不通过网页输入模型或数据库密码；Web登录密码仅用于本地身份认证。MySQL 与数据初始化沿用 [README](../README.md#本地-mysql)，Web 启动不会自动建表、导入数据或扩大白名单。PostgreSQL使用独立可信配置和相同登录/隔离边界，见[PostgreSQL说明](postgresql.md)。
+停止服务按 Ctrl+C；再次启动后当前工作区历史仍在，未结束的旧任务只标记中断，不会重新执行。可用 `uv run db-agent web --port 8001` 修改本机端口。
+
+模型和数据库继续读取根目录现有 `.env`。服务无法启动或页面显示配置未就绪时，按 `.env.example` 完成配置再重启服务；不通过网页输入模型或数据库密码。默认工作区的直接查询和模型表范围均来自数据库白名单；模型未配置时，SQL 查询、SQL 诊断和表结构仍可使用。MySQL 与数据初始化沿用 [README](../README.md#本地-mysql)，Web 启动不会自动建表、导入数据或扩大白名单。PostgreSQL 使用独立可信配置和相同工作区隔离边界，见[PostgreSQL说明](postgresql.md)。
+
+需要已有的多个独立身份时，显式运行 `uv run db-agent web --identity-file outputs/web/identities.json`；该模式仍要求密码登录，配置说明见[可选多身份模式](web-access.md)。不传参数时不读取身份文件，不继承旧用户历史，也不授予库存变更权限。
 
 开发时保留 `uv run db-agent web`，另开终端执行：
 
@@ -38,6 +39,8 @@ npm --prefix frontend run dev
 - **会话管理**：新建、搜索、重命名、删除与刷新恢复；`⌘/Ctrl+K` 新建对话，Enter 发送、Shift+Enter 换行。运行中会话必须先停止再删除。
 - **运行状态**：显示运行中与已完成的实际步骤；当前仍一次性返回答案，没有逐 token 输出。停止按钮请求取消，只有任务退出后显示停止；无法据此确认数据库服务器语句最终状态。
 
+例如“帮我查询最近的10个订单”按 `orders.created_at` 倒序取最多 10 条明细；订单不足 10 条时返回实际数量。用户明确的表、时间字段、筛选或列要求优先，结构和权限仍须真实核对，详见[需求核对](semantic-review.md)。
+
 ## 会话内追问
 
 Web 可以继续修改成功查询的用户口径，例如“统计 paid 订单数量和金额 → 按 customer_id 拆分”。每轮仍重新读结构和检查 SQL，保持原有 4 次模型、6 次工具、60 秒运行预算。
@@ -46,19 +49,40 @@ Web 可以继续修改成功查询的用户口径，例如“统计 paid 订单�
 
 仅完整成功的查询请求进入继承链。失败、取消、截断或不完整查询证据会暂停后续连续口径，避免“改一月失败 → 按客户拆分”错误沿用之前二月。界面提示新建对话并完整重述。无查询或只有元数据说明的 chat 也不构成完整业务口径，需新建对话后继续；直接 SQL 查询与诊断模式均不进入自然语言查询链。
 
-上轮回答、生成 SQL、报告与业务行不回放给模型，因此引用“上一页第三行”“这些客户”的行值追问需要用户提供明确标识。首版没有通用澄清状态或结果引用解析；独立 SQL 诊断也不会更新查询链。[业务知识](knowledge.md)的 CLI 范围与 Web 身份独立，登录后的新建 Web 对话可用 `[[knowledge:<id>]]` 显式引用，登录后的知识面板提供创建、确认、撤销与显式引用；其确认/失效边界与旧对话请求分开。
+上轮回答、生成 SQL、报告与业务行不回放给模型，因此引用“上一页第三行”“这些客户”的行值追问需要用户提供明确标识。首版没有通用澄清状态或结果引用解析；独立 SQL 诊断也不会更新查询链。[业务知识](knowledge.md)的 CLI 范围与 Web 工作区独立，新建 Web 对话可用 `[[knowledge:<id>]]` 显式引用，知识面板提供创建、确认、撤销与显式引用；其确认/失效边界与旧对话请求分开。
 
 ## 本地数据与服务边界
 
 `outputs/web/conversations.sqlite3` 保存问题、回答、SQL、报告和有限结果，供本机历史恢复；该目录被 Git 忽略，文件权限为 `0600`，新目录为 `0700`。它与不记录问题/SQL/行值的 `outputs/runs/*.jsonl` 是两套用途不同的存储。删除会话会删除其关联记录；本地历史不是审批账本或可复用权限。
 
-历史按可信用户、数据源、数据库账号、表白名单及持久化授权代际隔离，配置变化后旧范围历史不会出现在当前列表中。Web 结果 API 仅支持当前范围的持久化会话快照取回/分析/下载；不能取回任意 CLI `result_id`，不能提交客户端结果或任意文件路径。
+历史按服务端工作区、数据源、数据库账号、表白名单及持久化授权代际隔离；可选身份模式还按可信用户隔离。配置变化后旧范围历史不会出现在当前列表中，默认工作区不自动接收旧用户或更早匿名版本的数据。Web 结果 API 仅支持当前范围的持久化会话快照取回/分析/下载；不能取回任意 CLI `result_id`，不能提交客户端结果或任意文件路径。
 
 API 固定本机访问，验证 Host、Origin、跨站请求与 `X-DB-Agent-Client: web`，不开放 CORS；生产构建页面与 API 同源。模型凭据、数据库账号密码和连接地址不返回浏览器。当前单进程只允许一个运行，拒绝额外请求并提示等待；重复请求 ID 不会再次派发。每个数据源范围最多 100 个会话，每会话最多 100 条请求，超限提示删除历史或新建会话。
 
-该入口支持本机合成环境的多个可信身份。登录、模型数据边界、身份管理和撤销语义见[多身份接入说明](web-access.md)。远程发布、列/行权限、团队共享和写库仍不属于当前入口。下方2026-09-11整合验收是先前单用户版本的历史证据，新身份验收单独记录。
+默认是本机合成环境的单工作区；请求仍核对随机服务端会话 Cookie、页面绑定头、Host 与 Origin。可选密码登录、模型数据边界、身份管理和撤销语义见[接入说明](web-access.md)。远程发布、列/行权限和团队共享仍不属于当前入口。独立库存变更需另外配置目标、启用身份模式并分配审批权限，默认工作区不显示或开放该入口。下方2026-09-11整合验收是先前版本的历史证据。
 
 ## 验证
+
+### 2026-09-11 免登录与启动简化验收
+
+本轮对默认免登录、显式多身份兼容、自动前端构建及“最近的10个订单”回归分别验证：
+
+| 验证 | 命令或实际链路 | 结果 |
+| --- | --- | --- |
+| Python 全量 | `uv run pytest -q` | 1986 通过，200 跳过；跳过项需要显式真实环境开关 |
+| 启动分支 | `uv run pytest tests/test_web_startup.py -q` | 9 通过，覆盖首次准备、复用、源码/依赖变化与失败停止 |
+| Web 定向 | `uv run pytest tests/test_web.py tests/test_web_identity.py tests/test_web_local.py -q` | 76 通过；1 条 Starlette 第三方弃用警告 |
+| 真实 MySQL | `DB_AGENT_MYSQL_INTEGRATION=1 uv run pytest tests/test_mysql_integration.py tests/test_mysql_query.py -q` | 44 通过，现有本机 reader 与合成数据 |
+| 前端 | `npm --prefix frontend run build`、`npm --prefix frontend run test:e2e`、`npm --prefix frontend run format:check` | 构建/格式检查通过，48 项合成 HTTP 浏览器合同通过 |
+| 静态检查 | `uv run ruff check .`、`git diff --check` | 通过 |
+
+真实 Chromium 使用隔离本机历史库与现有模型/数据库配置访问端口 8011；免登录直接进入页面，没有用户、退出或库存变更入口。提交“帮我查询最近的10个订单”后得到用户报告中的原样 SQL，`status=ok`、`decision=ALLOW`、`execution_status=completed`，返回 6 行且未截断（fixture 只有 6 个订单）。刷新后历史和结果可取回，直接 SQL 查询同样完成，浏览器无 `pageerror`。它验证这个已暴露问题的真实页面链路，不代表通用自然语言准确率。
+
+本轮浏览器证据为忽略的 `outputs/quickstart-acceptance/browser-acceptance.json` 与同目录截图；模型阶段的原因与对照见[需求核对](semantic-review.md)。旧用户历史未迁移，未初始化或修改业务数据库。下面的早期整合数字属于各自历史版本。
+
+最终页面源码也经过真实 `ensure_frontend()` 启动准备：首次按需构建成功，耗时约 760 ms；紧接着再次检查约 2 ms、未调用 npm，复用同一产物。这是本次本机观测，不是启动耗时承诺。
+
+### 常用检查入口
 
 ```bash
 uv run pytest tests/test_web.py -q

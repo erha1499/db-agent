@@ -140,8 +140,8 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("check", help="调用一次模型，检查连通性")
     web = commands.add_parser("web", help="启动本机 Web 对话页面")
     web.add_argument("--port", type=int, default=8000, help="本机监听端口，默认 8000")
-    web.add_argument("--identity-file", type=Path, default=Path("outputs/web/identities.json"),
-                     help="管理员维护的私有身份 JSON 文件")
+    web.add_argument("--identity-file", type=Path,
+                     help="可选：启用需要登录的多身份模式，指定管理员维护的私有身份 JSON 文件")
     chat = commands.add_parser("chat", help="进行一次带元数据、诊断和只读查询工具的独立问答")
     chat.add_argument("prompt", help="问题或需要解释的 SQL")
     commands.add_parser("session", help="进行仅保留成功用户请求的会话内多轮查询")
@@ -179,9 +179,18 @@ def main(argv: list[str] | None = None) -> int:
         import uvicorn
 
         from db_agent.web import create_app
+        from db_agent.web_startup import WebStartupError, ensure_frontend
 
-        uvicorn.run(create_app(identity_path=args.identity_file), host="127.0.0.1",
-                    port=args.port, access_log=False)
+        try:
+            static_dir = ensure_frontend()
+        except WebStartupError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"本地页面：http://127.0.0.1:{args.port}（Ctrl+C 停止）", flush=True)
+        uvicorn.run(
+            create_app(static_dir=static_dir, identity_path=args.identity_file),
+            host="127.0.0.1", port=args.port, access_log=False,
+        )
         return 0
     if args.command == "chat" and not args.prompt.strip():
         parser.error("问题不能为空")

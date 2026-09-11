@@ -18,6 +18,7 @@ from db_agent import agent as agent_module
 from db_agent.config import load_database_settings, load_settings
 from db_agent.db import MetadataConnector
 from db_agent.query import QueryService
+from db_agent.query_conventions import QUERY_CONVENTIONS
 from db_agent.records import RunRecord
 
 SQL = "SELECT id FROM orders WHERE id < 10 ORDER BY id"
@@ -95,7 +96,7 @@ def metadata(monkeypatch):
     async def describe(self, table):
         calls.append(table)
         names = ["id", "name"] if table == "customers" else [
-            "id", "customer_id", "created_at", "paid_at", "total_amount", "status",
+            "id", "order_no", "customer_id", "created_at", "paid_at", "total_amount", "status",
         ]
         return {"database": self.database, "table": table,
                 "columns": [{"name": name, "type": "bigint"} for name in names], "indexes": []}
@@ -124,6 +125,55 @@ def run(prompt=PROMPT, record=None):
     return asyncio.run(agent_module.run_agent_observed(
         prompt, load_settings(), MetadataConnector(load_database_settings()), record,
     ))
+
+
+@pytest.mark.parametrize("prompt,sql", [
+    (
+        "帮我查询最近的10个订单",
+        "SELECT id, order_no, customer_id, status, total_amount, created_at, paid_at "
+        "FROM orders ORDER BY created_at DESC LIMIT 10",
+    ),
+    (
+        "查询最近支付的3个订单，只返回id，按paid_at降序",
+        "SELECT id FROM orders WHERE paid_at IS NOT NULL ORDER BY paid_at DESC LIMIT 3",
+    ),
+])
+def test_record_browsing_conventions_reach_all_three_stages_without_bypassing_review(
+    stub_server, metadata, executions, prompt, sql,
+):
+    # These model responses are fixtures; live interpretation is verified separately.
+    stub_server["responses"] = [
+        tool_completion(("describe_table", {"table": "orders"})),
+        tool_completion(("execute_query", {"sql": sql})), intent(sql), review(),
+    ]
+    observed = run(prompt)
+    assert executions == [sql]
+    assert observed.model_calls == len(stub_server["requests"]) == 4
+    assert observed.query_intents[0]["selection"] == "AST_MATCH"
+    assert observed.semantic_reviews[0]["verdict"] == "match"
+    for request in stub_server["requests"]:
+        assert QUERY_CONVENTIONS in request["body"]["messages"][0]["content"]
+    contract_context = json.loads(stub_server["requests"][2]["body"]["messages"][-1]["content"])
+    assert contract_context["user_request"] == prompt
+    assert set(contract_context) == {"user_request", "schemas"}
+
+
+@pytest.mark.parametrize("stage", ["intent", "review"])
+def test_record_browsing_defaults_cannot_override_unresolved_requirements(
+    stub_server, metadata, executions, stage,
+):
+    sql = "SELECT id FROM orders ORDER BY created_at DESC LIMIT 10"
+    unresolved = {"query": None, "uncertainties": ["实际结构缺少可确定的创建时间字段"]}
+    stub_server["responses"] = [
+        tool_completion(("execute_query", {"sql": sql})),
+        tool_completion(("QueryIntent", unresolved)) if stage == "intent" else intent(sql),
+        *([review("uncertain")] if stage == "review" else []),
+    ]
+    observed = run("帮我查询最近的10个订单")
+    assert executions == []
+    assert observed.queries[0].report["execution_status"] == "not_started"
+    assert observed.queries[0].report["error"]["code"] == "SEMANTIC_UNCERTAIN"
+    assert len(observed.semantic_reviews) == (0 if stage == "intent" else 1)
 
 
 def test_contract_replaces_incomplete_candidate_before_the_only_review(

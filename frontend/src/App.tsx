@@ -673,8 +673,13 @@ function SchemaDrawer({ onClose }: { onClose: () => void }) {
 export default function App() {
   return (
     <AuthGate>
-      {(identity, boundary, logout) => (
-        <Workspace identity={identity} boundary={boundary} logout={logout} />
+      {(identity, boundary, logout, accessMode) => (
+        <Workspace
+          identity={identity}
+          boundary={boundary}
+          logout={logout}
+          accessMode={accessMode}
+        />
       )}
     </AuthGate>
   );
@@ -684,10 +689,12 @@ function Workspace({
   identity,
   boundary,
   logout,
+  accessMode,
 }: {
   identity: Identity;
   boundary: string;
   logout: () => void;
+  accessMode: 'local' | 'password';
 }) {
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -1005,6 +1012,16 @@ function Workspace({
     !status?.database_configured ||
     (mode === 'chat' &&
       (!identity.model_enabled || !status.model_configured || !!conversation?.context_paused));
+  const localWorkspace = accessMode === 'local';
+  const queryTables = identity.model_enabled ? identity.model_tables : identity.allowed_tables;
+  const sampleQuestion = queryTables.includes('orders')
+    ? '帮我查询最近的10个订单'
+    : queryTables[0]
+      ? `帮我查看 ${queryTables[0]} 的前10条记录`
+      : '';
+  const sampleSql = identity.allowed_tables.includes('orders')
+    ? 'SELECT * FROM orders ORDER BY created_at DESC LIMIT 10'
+    : '';
   return (
     <div className="app-shell">
       {sidebarOpen && (
@@ -1099,14 +1116,21 @@ function Workspace({
             <Database size={17} />
           </span>
           <div>
-            <button
-              className="identity-button"
-              onClick={() => setIdentityOpen(true)}
-              aria-label="查看当前身份与权限"
-            >
-              <strong>{identity.display_name}</strong>
-              <span>{identity.username} · 查看权限</span>
-            </button>
+            {localWorkspace ? (
+              <>
+                <strong>本机工作区</strong>
+                <span>{identity.model_enabled ? '智能查询 · SQL 诊断' : 'SQL 查询 · 诊断'}</span>
+              </>
+            ) : (
+              <button
+                className="identity-button"
+                onClick={() => setIdentityOpen(true)}
+                aria-label="查看当前身份与权限"
+              >
+                <strong>{identity.display_name}</strong>
+                <span>{identity.username} · 查看权限</span>
+              </button>
+            )}
           </div>
           <button
             className="icon-button"
@@ -1160,15 +1184,24 @@ function Workspace({
           <div className="source-controls">
             <span className="source-name">
               <Database size={14} />
-              {status?.database || '未配置数据库'}
+              {status?.database || (initialLoading ? '读取数据源…' : '未配置数据库')}
             </span>
             <span className="readonly-badge">查询只读</span>
-            <button className="secondary-button" onClick={() => setChangesOpen(true)}>
-              受控变更
-            </button>
-            <button className="icon-button" aria-label="退出登录" onClick={logout} title="退出登录">
-              <LogOut size={17} />
-            </button>
+            {(status?.changes_enabled ?? !localWorkspace) && (
+              <button className="secondary-button" onClick={() => setChangesOpen(true)}>
+                受控变更
+              </button>
+            )}
+            {!localWorkspace && (
+              <button
+                className="icon-button"
+                aria-label="退出登录"
+                onClick={logout}
+                title="退出登录"
+              >
+                <LogOut size={17} />
+              </button>
+            )}
             <button
               className="secondary-button schema-trigger"
               onClick={() => setSchemaOpen(true)}
@@ -1230,7 +1263,7 @@ function Workspace({
                   <button
                     onClick={() => {
                       setMode(identity.model_enabled ? 'chat' : 'query');
-                      setDraft('');
+                      setDraft(identity.model_enabled ? sampleQuestion : sampleSql);
                       inputRef.current?.focus();
                     }}
                   >
@@ -1238,14 +1271,16 @@ function Workspace({
                     <strong>查询业务数据</strong>
                     <span>
                       {identity.model_enabled
-                        ? '描述时间范围、指标和筛选条件'
-                        : '提交完整 SELECT，不调用模型'}
+                        ? sampleQuestion || '描述时间范围、指标和筛选条件'
+                        : sampleSql
+                          ? '示例：查询最近的 10 个订单'
+                          : '提交完整 SELECT，不调用模型'}
                     </span>
                   </button>
                   <button
                     onClick={() => {
                       setMode('analyze');
-                      setDraft('');
+                      setDraft(sampleSql);
                       inputRef.current?.focus();
                     }}
                   >
@@ -1375,7 +1410,11 @@ function Workspace({
                   type="button"
                   disabled={!identity.model_enabled}
                   title={
-                    !identity.model_enabled ? '当前身份未获准使用模型' : '在模型获准范围内查询'
+                    !identity.model_enabled
+                      ? localWorkspace
+                        ? '配置模型后即可使用智能查询'
+                        : '当前身份未获准使用模型'
+                      : '在模型获准范围内查询'
                   }
                   aria-pressed={mode === 'chat'}
                   onClick={() => setMode('chat')}

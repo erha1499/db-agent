@@ -34,7 +34,7 @@ export function announceLogin() {
   channel?.postMessage('changed');
 }
 channel?.addEventListener('message', () => {
-  clearAccess('登录状态已在其他页面更改，请重新登录。', false);
+  clearAccess('工作区状态已在其他页面更改，请重新连接。', false);
 });
 
 async function request<T>(
@@ -43,7 +43,7 @@ async function request<T>(
   decode: (response: Response) => Promise<T>,
 ): Promise<T> {
   const isAuth = path.startsWith('/auth/');
-  if (!isAuth && !authenticated) throw new ApiError('请先登录。', 401);
+  if (!isAuth && !authenticated) throw new ApiError('工作区尚未连接。', 401);
   const started = generation;
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -65,9 +65,9 @@ async function request<T>(
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      if (started !== generation) throw new DOMException('登录状态已更改。', 'AbortError');
+      if (started !== generation) throw new DOMException('工作区连接已更改。', 'AbortError');
       if (response.status === 401 && !isAuth)
-        clearAccess('登录已失效或权限配置已变更，请重新登录。');
+        clearAccess('工作区连接已失效或权限配置已变更，请重新连接。');
       throw new ApiError(
         payload?.error?.message || '服务暂时不可用，请检查本机 Web 服务。',
         response.status,
@@ -75,7 +75,7 @@ async function request<T>(
       );
     }
     const value = await decode(response);
-    if (started !== generation) throw new DOMException('登录状态已更改。', 'AbortError');
+    if (started !== generation) throw new DOMException('工作区连接已更改。', 'AbortError');
     return value;
   } finally {
     pending.delete(controller);

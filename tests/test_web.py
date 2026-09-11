@@ -16,11 +16,8 @@ from db_agent.config import AnalysisSettings, DatabaseSettings, QuerySettings, S
 from db_agent.conversation_context import conversation_prompt
 from db_agent.conversations import ConversationStore, now
 from db_agent.presentation import AgentRunResult, QueryExecution, has_complete_query_results
-from db_agent.web_identity import password_hash
 
 HEADERS = {"X-DB-Agent-Client": "web"}
-PASSWORD = "synthetic-web-password"
-PASSWORD_HASH = password_hash(PASSWORD)
 
 
 class TestClient(BaseTestClient):
@@ -28,26 +25,20 @@ class TestClient(BaseTestClient):
 
     def __enter__(self):
         result = super().__enter__()
-        response = self.post("/api/auth/login", json={"username": "alice", "password": PASSWORD})
+        response = self.get("/api/auth/session")
         assert response.status_code == 200, response.text
+        assert response.json()["access_mode"] == "local"
         self.headers["X-DB-Agent-Session"] = response.json()["session_id"]
         return result
 
 
 def current_runtime(app):
-    return next(item for key, item in app.state.service.runtimes.items() if key.endswith(":alice"))
+    return next(item for key, item in app.state.service.runtimes.items() if key.endswith(":local"))
 
 
 @pytest.fixture(autouse=True)
 def configuration(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    path = tmp_path / "outputs/web/identities.json"
-    path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"version": 1, "users": [{
-        "username": "alice", "display_name": "Alice", "password_hash": PASSWORD_HASH,
-        "allowed_tables": ["orders"], "model_enabled": True, "model_tables": ["orders"],
-    }]}))
-    path.chmod(0o600)
     monkeypatch.setattr(
         web,
         "load_database_settings",

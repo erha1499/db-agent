@@ -68,20 +68,17 @@ uv run db-agent db query "SELECT COUNT(*) AS order_count, SUM(total_amount) AS t
 
 ## 打开本地 Web 页面
 
-先完成上面的数据库配置和首条查询，再执行一次：
+完成上面的数据库配置后，一条命令启动：
 
 ```bash
-uv run python scripts/manage_web_users.py set alice --tables customers orders order_items
-npm --prefix frontend ci --registry=https://registry.npmjs.org
-npm --prefix frontend run build
 uv run db-agent web
 ```
 
-第一条命令会要求输入两次 **12–128 字符的网页登录密码**，输入时不显示。它与数据库密码独立，脚本会创建私有身份文件 `outputs/web/identities.json`。重新对同一用户运行 `set` 会替换密码和完整权限；日常启动无需重复执行。
+**无需设置 Web 用户名或密码，打开即可使用。** 首次启动自动按锁文件安装网页依赖并构建页面；以后复用已有产物，页面代码变化时自动重建，依赖变化时才重新安装。安装需要可用的 npm 和网络；失败时终端显示修复步骤。
 
-打开 [http://127.0.0.1:8000](http://127.0.0.1:8000)，使用 `alice` 和刚设置的密码登录，选择 **直接查询 SQL**，粘贴上面的 SQL。此账号可查看三张示例表、执行受控 SQL 查询和诊断；不调用模型。查询完成后可查看结果表格，在“分析与交付”中生成图表、下载 HTML 报告或 JSON。
+打开 [http://127.0.0.1:8000](http://127.0.0.1:8000)，选择 **直接查询 SQL**，粘贴上面的 SQL。默认工作区直接使用 `.env` 的数据库白名单，可查看表结构、执行受控 SQL 查询和诊断；这些操作不调用模型。查询完成后可查看结果表格，在“分析与交付”中生成图表、下载 HTML 报告或 JSON。
 
-Web 固定监听本机，当前为单进程入口。Python wheel 不包含已构建页面，源码启动需要上面的前端构建。更多使用方式见 [Web 说明](docs/web.md)和[身份管理](docs/web-access.md)。
+Web 固定监听本机，当前为单进程入口；启动不会自动建表、修改数据库账号或填写凭据。Python wheel 不包含页面，需要完整源码仓库。已有多身份用法可显式添加 `--identity-file outputs/web/identities.json`；默认不会读取这个文件，也不会继承旧用户的历史或库存写权限。更多使用方式见 [Web 说明](docs/web.md)和[可选身份模式](docs/web-access.md)。
 
 ## 启用自然语言查询（可选）
 
@@ -105,17 +102,16 @@ uv run db-agent session
 
 `config` 只校验格式、隐藏配置值，模板占位值也可能通过；`check` 才会真实调用一次模型，且不检查数据库。`chat` 每次独立运行；`session` 在内存中支持多轮，退出清空，失败或结果不完整后需 `/reset` 并完整重述。
 
-如果也要在网页使用“智能查询”，为 `alice` 开启模型权限，然后重启 Web 并重新登录：
+配置好模型后，重启 Web 即可使用“智能查询”：
 
 ```bash
-uv run python scripts/manage_web_users.py set alice \
-  --tables customers orders order_items --allow-model \
-  --model-tables customers orders order_items
 # 在原 Web 终端按 Ctrl+C 后启动
 uv run db-agent web
 ```
 
-此命令会重新设置登录密码与权限。`--tables` 必须在数据库白名单内，`--model-tables` 必须在用户表权限内。问题、SQL、授权结构和计划摘要会发送给配置模型；查询返回行由程序直接展示，不再回传模型。更完整的模型核对方式见[交付说明](docs/delivery.md)。
+默认工作区的模型表范围与数据库白名单相同，无需额外勾选用户权限。问题、SQL、授权结构和计划摘要会发送给配置模型；查询返回行由程序直接展示，不再回传模型。更完整的模型核对方式见[交付说明](docs/delivery.md)。
+
+可直接问“帮我查询最近的10个订单”：默认按 `orders.created_at` 倒序查看最多 10 条明细；订单不足 10 条时返回实际数量。明确指定的表、时间字段和其他条件优先，规则详见[需求核对](docs/semantic-review.md)。
 
 ## 以后每次启动
 
@@ -126,12 +122,12 @@ docker compose up -d --wait
 uv run db-agent web
 ```
 
-打开 [http://127.0.0.1:8000](http://127.0.0.1:8000) 并登录即可。只用 CLI 时无需启动 Web，直接运行 `uv run db-agent db query '…'` 或 `chat`。
+打开 [http://127.0.0.1:8000](http://127.0.0.1:8000) 即可。只用 CLI 时无需启动 Web，直接运行 `uv run db-agent db query '…'` 或 `chat`。
 
-- **更新代码后**：运行 `uv sync --locked`；前端依赖或源码更新后再执行 `npm --prefix frontend ci --registry=https://registry.npmjs.org` 和 `npm --prefix frontend run build`。
+- **更新代码后**：运行 `uv sync --locked`，再执行 `uv run db-agent web`；网页依赖和构建由启动命令检查。
 - **停止 Web**：在对应终端按 `Ctrl+C`。
 - **停止数据库并保留数据**：`docker compose stop mysql`。数据保存在 `db-agent_mysql_data` 卷中。
-- **修改配置后**：重启 Web 并重新登录。配置变化会隔离旧范围的历史、结果和知识，恢复旧配置也不会让旧范围重新可用。
+- **修改配置后**：重启 Web 并刷新页面。配置变化会隔离旧范围的历史、结果和知识，恢复旧配置也不会让旧范围重新可用。
 
 ## 常用命令与启动排错
 
@@ -148,10 +144,10 @@ uv run db-agent web
 | --- | --- |
 | `uv` / `docker` / `npm` 找不到 | 先安装对应工具；`npm` 仅网页需要，Docker 还需启动运行环境 |
 | 数据库连接失败 | 用 `docker compose ps` 确认 `mysql` 为 healthy，再核对 `.env` 的端口和 reader 密码；已有卷按上文改密规则处理 |
-| 查不到表或未授权 | 检查是否完成示例数据初始化、数据库白名单是否包含目标表；Web 用户还需有对应表权限 |
-| 网页提示先构建前端 | 执行上面的 `npm ci` 与 `npm run build`，再重新打开页面 |
-| 身份文件缺失或无效 | 用管理脚本创建身份；文件默认位于 `outputs/web/identities.json`，权限须为 `600`，用户表权限不得超出数据库白名单 |
-| 网页不能使用智能查询 | 先用 `check` 验证真实模型，再核对用户的 `--allow-model` / `--model-tables`；重启 Web 并重新登录 |
+| 查不到表或未授权 | 检查是否完成示例数据初始化、数据库白名单是否包含目标表 |
+| 网页依赖安装或构建失败 | 按终端错误检查 Node.js/npm、网络和源码；可手动执行 `npm --prefix frontend ci` 与 `npm --prefix frontend run build` 后再启动 |
+| 显式身份模式的文件缺失或无效 | 仅传入 `--identity-file` 时需要身份文件；按[身份管理](docs/web-access.md)修正，不需要多身份时直接运行 `uv run db-agent web` |
+| 网页不能使用智能查询 | 填写 `.env` 的三个模型配置，用 `uv run db-agent check` 验证真实模型，再重启 Web；SQL 查询仍可独立使用 |
 | 8000 端口被占用 | 用 `uv run db-agent web --port 8001`，打开 `http://127.0.0.1:8001` |
 
 ## 能力与详细文档
@@ -159,7 +155,7 @@ uv run db-agent web
 | 能力 | 当前范围与入口 |
 | --- | --- |
 | 查询与需求核对 | 授权元数据、普通 EXPLAIN、受控 SELECT；[自然语言需求核对](docs/semantic-review.md) |
-| 多轮查询与本地网页 | [CLI 会话](docs/conversations.md)、[Web 使用](docs/web.md)、[登录与表权限](docs/web-access.md) |
+| 多轮查询与本地网页 | [CLI 会话](docs/conversations.md)、[免登录 Web 使用](docs/web.md)、[可选多身份模式](docs/web-access.md) |
 | 结果分析与导出 | 对已保存结果做分组、趋势、HTML/JSON 导出，不再次查库；[结果交付](docs/result-delivery.md) |
 | 跨会话业务知识 | 人工创建、确认、显式引用与撤销；[业务知识](docs/knowledge.md) |
 | SQL 优化核对 | `db compare` 在同一只读快照比较原/候选 SQL；结果一致只代表该快照；[优化验证](docs/optimization.md) |

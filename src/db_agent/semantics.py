@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from db_agent.conversation_context import CONVERSATION_RULES
+from db_agent.query_conventions import QUERY_CONVENTIONS
 
 ShortEvidence = Annotated[
     str, Field(strict=True, min_length=1, max_length=240, pattern=r"\S"),
@@ -101,7 +102,7 @@ replacement_sql 必须为 null。若用户只要求诊断、解释或编写 SQL�
 注释、写入或有副作用的操作。
 不为绕过权限或风险规则改写 SQL；语义修正之后仍必须经过独立的执行预检。
 可信目标方言：MySQL。标识符使用反引号，升序默认 NULL 在前，降序默认 NULL 在后。
-"""
+""" + QUERY_CONVENTIONS
 
 
 class SemanticReviewError(Exception):

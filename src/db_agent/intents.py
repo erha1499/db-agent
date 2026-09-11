@@ -19,6 +19,7 @@ from sqlglot.errors import ErrorLevel
 from db_agent.config import AnalysisSettings
 from db_agent.conversation_context import CONVERSATION_RULES
 from db_agent.policy import check_sql
+from db_agent.query_conventions import QUERY_CONVENTIONS
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")]
@@ -116,7 +117,7 @@ uncertainties 只记录会阻止完成任务的真实缺口；可从明确要求
 已采用的口径、SQL 实现说明、未要求所以不添加的条件均不是缺口，不写入 uncertainties。
 仅调用 QueryIntent 工具返回完整结构。合同之后仍需独立语义复核和确定性的完整执行预检。
 可信目标方言：MySQL。标识符使用反引号，升序默认 NULL 在前，降序默认 NULL 在后。
-"""
+""" + QUERY_CONVENTIONS
 
 _POSTGRES_DIALECT_PROMPT = """可信目标方言：PostgreSQL。
 标识符使用双引号；未加引号时折小写，双引号内大小写精确，不使用反引号。

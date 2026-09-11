@@ -27,16 +27,16 @@ uv run python scripts/setup_changes_mysql.py --create
 
 writer 另有固定视图 SELECT/SHOW VIEW、固定函数 EXECUTE，以及用于核对函数完整定义的 `SHOW_ROUTINE` 元数据权限。`SHOW_ROUTINE` 是实例范围的定义读取权限，因此此版本严格限定独立合成实例，不能照搬到共享生产实例。writer 没有 TRIGGER、DDL、DELETE、修改主键或改删回执权限。管理员仅通过此容器本地 socket 初始化；运行时不使用管理员凭据。
 
-`outputs/changes/compose.env` 保存新容器初始化密码；`target.json` 保存 writer、实际 server UUID 和结构摘要；`reader.json` 保存独立只读账号配置。这些都是私有、忽略的本机文件，不改原项目 `.env`，也不改变 `db_agent_reader`。应用默认寻找当前项目的 `outputs/changes/target.json`；缺失时关闭变更，文件无效时撤销接入。不要手动刷新摘要以绕过结构漂移。
+`outputs/changes/compose.env` 保存新容器初始化密码；`target.json` 保存 writer、实际 server UUID 和结构摘要；`reader.json` 保存独立只读账号配置。这些都是私有、忽略的本机文件，不改原项目 `.env`，也不改变 `db_agent_reader`。显式身份模式读取当前项目的 `outputs/changes/target.json`；缺失时关闭变更，文件无效时撤销接入。默认免登录工作区不读取此文件。不要手动刷新摘要以绕过结构漂移。
 
-原本机 Web 仍按[多身份接入](web-access.md)配置查询源与私有身份。在管理员管理命令中明确授权目标和人工审批权限：
+受控变更需显式启用[多身份模式](web-access.md)并配置查询源与私有身份；默认免登录工作区不开放此入口。在管理员管理命令中明确授权目标和人工审批权限：
 
 ```bash
 uv run python scripts/manage_web_users.py set alice --tables orders \
   --change-targets local_inventory --allow-change-approval
 npm --prefix frontend ci --registry=https://registry.npmjs.org
 npm --prefix frontend run build
-uv run db-agent web
+uv run db-agent web --identity-file outputs/web/identities.json
 ```
 
 `set` 仍会交互设置登录密码；`--tables` 必须收窄已有查询白名单。省略新增标志时，变更目标为空、审批权限关闭。查询表权限不会自动转成变更权限；`local_inventory` 只授予本页固定目标的数据预览和变更范围。审批权限允许本人审核自己的预览，并执行已审批记录，不提供其他用户代审。

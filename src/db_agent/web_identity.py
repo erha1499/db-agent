@@ -72,6 +72,22 @@ class IdentityFile(BaseModel):
     users: list[Identity] = Field(min_length=1, max_length=32)
 
 
+class LocalIdentity(BaseModel):
+    """Server-owned workspace scope; no password or browser-supplied permissions."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    username: Literal["local"] = "local"
+    display_name: str = "本机工作区"
+    allowed_tables: list[str]
+    model_enabled: bool
+    model_tables: list[str]
+    change_targets: list[Literal["local_inventory"]] = Field(default_factory=list, max_length=0)
+    change_approve: Literal[False] = False
+
+    def public(self):
+        return self.model_dump()
+
+
 def read_identities(path: Path, allowed_tables: tuple[str, ...]) -> IdentityFile:
     """Read only the explicitly configured private regular file; fail closed."""
     try:
@@ -141,6 +157,11 @@ class Sessions:
         valid = verify_password(password, user.password_hash if user else self.dummy_hash)
         if not user or not user.enabled or not valid:
             return None, "LOGIN_FAILED"
+        return self.issue(username, generation)
+
+    def issue(self, username: str, generation: str):
+        """Issue a random page session after the server selects its access scope."""
+        stamp = time.monotonic()
         self.values = {key: item for key, item in self.values.items() if item.expires > stamp}
         if len(self.values) >= 128:
             return None, "LOGIN_RATE_LIMIT"

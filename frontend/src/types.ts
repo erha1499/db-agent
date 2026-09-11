@@ -107,12 +107,14 @@ export type Identity = {
   model_enabled: boolean;
 };
 export type AuthSession = {
+  access_mode?: 'local' | 'password';
   session_id?: string;
   authenticated: boolean;
   identity?: Identity;
   model_boundary: string;
 };
 export type AppStatus = {
+  changes_enabled?: boolean;
   identity: Identity;
   model_boundary: string;
   database: string | null;

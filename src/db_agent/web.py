@@ -56,6 +56,7 @@ from db_agent.web_identity import (
     COOKIE,
     MODEL_BOUNDARY,
     SESSION_SECONDS,
+    LocalIdentity,
     LoginSession,
     Sessions,
     read_identities,
@@ -362,9 +363,10 @@ class WebRuntime:
 class WebService:
     """One process, many trusted principals; global run budget remains one."""
 
-    def __init__(self, store_path: Path, identity_path: Path):
+    def __init__(self, store_path: Path, identity_path: Path | None):
         self.store = ConversationStore(store_path)
         self.identity_path = identity_path
+        self.access_mode = "password" if identity_path is not None else "local"
         self.sessions = Sessions()
         self.login_lock = asyncio.Lock()
         self.knowledge = KnowledgeStore()
@@ -381,10 +383,11 @@ class WebService:
     def refresh(self):
         try:
             db_settings = load_database_settings()
-            change_target = load_change_target()
+            change_target = load_change_target() if self.identity_path is not None else None
             analysis = load_analysis_settings()
             query = load_query_settings()
-            identities = read_identities(self.identity_path, db_settings.allowed_tables)
+            identities = (read_identities(self.identity_path, db_settings.allowed_tables)
+                          if self.identity_path is not None else None)
             try:
                 settings = load_settings()
                 model = settings.model_dump(mode="json", exclude={"api_key"})
@@ -394,17 +397,23 @@ class WebService:
             except ConfigurationError:
                 model = None
                 settings = None
+            local_identity = LocalIdentity(
+                allowed_tables=list(db_settings.allowed_tables),
+                model_enabled=settings is not None,
+                model_tables=list(db_settings.allowed_tables) if settings is not None else [],
+            )
             fingerprint = hashlib.sha256(json.dumps([
                 change_target.fingerprint() if change_target else None,
-                identities.model_dump(mode="json"), db_settings.kind,
+                (identities.model_dump(mode="json") if identities else
+                 {"access_mode": "local", "workspace": local_identity.public()}), db_settings.kind,
                 db_settings.model_dump(mode="json", exclude={"password"}), model,
                 hashlib.sha256(db_settings.password.get_secret_value().encode()).hexdigest(),
                 analysis.model_dump(mode="json"), query.model_dump(mode="json"),
             ], sort_keys=True).encode()).hexdigest()
             error = None
-        except ConfigurationError:
+        except ConfigurationError as exc:
             fingerprint = "invalid"
-            error = "Web 接入配置无效，请管理员检查身份文件与数据库配置。"
+            error = f"Web 配置不可用：{exc}"
         if fingerprint != self.fingerprint:
             # A fresh durable generation on every observed change prevents restoring
             # an older config from resurrecting history, knowledge, or sessions.
@@ -430,16 +439,19 @@ class WebService:
         self.analysis = analysis
         self.query = query
         self.identities = identities
+        self.local_identity = local_identity
 
     def authorize(self):
         try:
             self.refresh()
         except (ConfigurationError, OSError, sqlite3.Error):
-            raise DatabaseError("PERMISSION_DENIED", "身份配置失效，操作已停止。") from None
+            raise DatabaseError("PERMISSION_DENIED", "工作区配置失效，操作已停止。") from None
         if not self.sessions.valid(_session.get(), self.generation):
-            raise DatabaseError("PERMISSION_DENIED", "登录或授权已失效，请重新登录。")
+            raise DatabaseError("PERMISSION_DENIED", "工作区会话已失效，请重新连接。")
 
     def identity(self, session):
+        if self.identities is None:
+            return self.local_identity
         return next(user for user in self.identities.users if user.username == session.username)
 
     def runtime(self, session):
@@ -484,7 +496,6 @@ def create_app(
 ) -> FastAPI:
     store_path = store_path or Path("outputs/web/conversations.sqlite3")
     static_dir = static_dir or Path(__file__).resolve().parents[2] / "frontend/dist"
-    identity_path = identity_path or Path("outputs/web/identities.json")
 
     @asynccontextmanager
     async def lifespan(app):
@@ -599,9 +610,11 @@ def create_app(
 
     def session_response(service, session):
         if not service.sessions.valid(session, service.generation):
-            return {"authenticated": False, "model_boundary": MODEL_BOUNDARY}
+            return {"authenticated": False, "access_mode": service.access_mode,
+                    "model_boundary": MODEL_BOUNDARY}
         return {
             "authenticated": True, "session_id": session.key,
+            "access_mode": service.access_mode,
             "identity": {**service.identity(session).public(),
                          "authorization_version": service.generation},
             "model_boundary": MODEL_BOUNDARY,
@@ -609,11 +622,25 @@ def create_app(
 
     @app.get("/api/auth/session")
     async def auth_session(request: Request):
-        return session_response(request.app.state.service, _session.get())
+        service = request.app.state.service
+        session = _session.get()
+        if service.access_mode == "local" and session is None:
+            token, code = service.sessions.issue("local", service.generation)
+            if code:
+                return _error("SESSION_LIMIT", "本机页面会话过多，请关闭多余页面后重启服务。", 429)
+            response = JSONResponse(session_response(
+                service, service.sessions.get(token, service.generation),
+            ))
+            response.set_cookie(COOKIE, token, max_age=SESSION_SECONDS, path="/api",
+                                httponly=True, samesite="strict")
+            return response
+        return session_response(service, session)
 
     @app.post("/api/auth/login")
     async def login(payload: LoginInput, request: Request):
         service = request.app.state.service
+        if service.access_mode == "local":
+            return _error("LOGIN_DISABLED", "本机工作区无需登录，请直接连接。", 404)
         generation = service.generation
         async with service.login_lock:
             token, code = await asyncio.to_thread(
@@ -660,6 +687,10 @@ def create_app(
             "identity": {**state.identity.public(),
                          "authorization_version": _session.get().generation},
             "model_boundary": MODEL_BOUNDARY,
+            "access_mode": request.app.state.service.access_mode,
+            "changes_enabled": bool(request.app.state.service.change_target
+                                    and state.identity.change_targets
+                                    and request.app.state.service.db_settings.kind == "mysql"),
         }
 
     @app.get("/api/changes")
